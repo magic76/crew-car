@@ -10,6 +10,9 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.net.Network;
+import android.view.SurfaceHolder;
+import android.widget.FrameLayout;
 import android.provider.Settings;
 import android.text.InputType;
 import android.view.Gravity;
@@ -27,16 +30,13 @@ import android.widget.ArrayAdapter;
 import android.widget.TextView;
 
 import java.util.LinkedHashMap;
-import java.util.HashSet;
 import java.util.Map;
-import java.util.Set;
 import org.json.JSONObject;
 
 public final class MainActivity extends Activity {
     private static final int MIC_PERMISSION_REQUEST = 101;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final Map<String, EditText> packets = new LinkedHashMap<>();
-    private final Set<String> heldDirections = new HashSet<>();
     private CarLog log;
     private CarNetwork routes;
     private CarControl control;
@@ -55,8 +55,38 @@ public final class MainActivity extends Activity {
     private volatile int lastFrameHeight;
     private volatile int currentCameraAdapter;
     private boolean changingConfig;
-    private Runnable manualPulse;
-    private String lastManualIssue = "";
+    private ScrollView settingsScroller;
+    private View drivingSpacer;
+    private Button modeButton;
+    private DrivePadView drivePad;
+    private boolean drivingMode = true;
+    private boolean cameraWanted = true;
+    private boolean cameraManualRequested;
+    private boolean foreground;
+    private boolean cameraRunning;
+    private Network cameraNetwork;
+    private long cameraSession;
+    private int heldSteer, heldThrottle;
+    private final Runnable manualPulse = new Runnable() {
+        @Override public void run() {
+            if (!foreground || !control.armed() || (heldSteer == 0 && heldThrottle == 0)) return;
+            control.driveManualAxes(heldSteer, heldThrottle);
+            main.postDelayed(this, 180);
+        }
+    };
+    private final Runnable cameraMonitor = new Runnable() {
+        @Override public void run() {
+            if (!foreground) return;
+            Network current = routes.wifi();
+            if (cameraRunning && (current == null || !current.equals(cameraNetwork) ||
+                    (currentCameraAdapter == 0 && !wltoysVideo.isRunning()) ||
+                    (currentCameraAdapter == 1 && !camera.isRunning()))) {
+                stopCameraReceiver();
+            }
+            maybeStartCamera();
+            main.postDelayed(this, 2500);
+        }
+    };
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -68,7 +98,7 @@ public final class MainActivity extends Activity {
         gemini = new GeminiLive(log);
         render();
         log.setListener(s -> runOnUiThread(() -> { if (logs != null) logs.setText(s); }));
-        log.i("APP", "Crew Car v0.1.2; diagonal input; vehicle ACK unconfirmed");
+        log.i("APP", "Crew Car v0.1.3; driver console and camera lifecycle; no vehicle ACK");
         routes.diagnostics();
     }
 
@@ -121,24 +151,70 @@ public final class MainActivity extends Activity {
     }
 
     private void render() {
-        ScrollView scroller = new ScrollView(this);
-        scroller.setFillViewport(true);
+        LinearLayout screen = new LinearLayout(this);
+        screen.setOrientation(LinearLayout.VERTICAL);
+        screen.setBackgroundColor(Color.rgb(248, 250, 252));
+        setContentView(screen);
+        LinearLayout banner = new LinearLayout(this);
+        banner.setPadding(dp(12), dp(6), dp(12), dp(4));
+        banner.setOrientation(LinearLayout.VERTICAL);
+        screen.addView(banner);
+        row(banner, button("Crew Car · FPV", v -> {}), button("設定／診斷", v -> toggleMode()));
+        modeButton = (Button) ((LinearLayout) banner.getChildAt(0)).getChildAt(1);
+        netStatus = label(banner, "檢查網路中…", 12);
+        cameraStatus = label(banner, "攝影機未連線", 12);
+
+        FrameLayout cameraFrame = new FrameLayout(this);
+        int width = getResources().getDisplayMetrics().widthPixels - dp(24);
+        screen.addView(cameraFrame, new LinearLayout.LayoutParams(-1,
+                Math.max(dp(160), Math.min(dp(290), width * 9 / 16))));
+        preview = new ImageView(this);
+        preview.setBackgroundColor(Color.rgb(22, 32, 46));
+        preview.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        cameraFrame.addView(preview, new FrameLayout.LayoutParams(-1, -1));
+        hevcPreview = new SurfaceView(this);
+        hevcPreview.setBackgroundColor(Color.rgb(22, 32, 46));
+        cameraFrame.addView(hevcPreview, new FrameLayout.LayoutParams(-1, -1));
+        hevcPreview.getHolder().addCallback(new SurfaceHolder.Callback() {
+            @Override public void surfaceCreated(SurfaceHolder holder) {
+                log.i("CAM", "SurfaceView created; camera can start");
+                maybeStartCamera();
+            }
+            @Override public void surfaceChanged(SurfaceHolder holder, int format, int w, int h) {
+                log.i("CAM", "Surface size=" + w + "x" + h);
+            }
+            @Override public void surfaceDestroyed(SurfaceHolder holder) {
+                log.i("CAM", "SurfaceView destroyed; suspending camera");
+                if (currentCameraAdapter == 0) {
+                    stopCameraReceiver();
+                    if (control != null) control.disarm();
+                    if (arm != null) uncheck();
+                }
+            }
+        });
+
+        settingsScroller = new ScrollView(this);
+        settingsScroller.setFillViewport(true);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(16), dp(15), dp(16), dp(32));
         root.setBackgroundColor(Color.rgb(248, 250, 252));
-        scroller.addView(root);
-        setContentView(scroller);
-
-        TextView heading = label(root, "Crew Car  |  FPV × Gemini Live", 23);
+        settingsScroller.addView(root);
+        screen.addView(settingsScroller, new LinearLayout.LayoutParams(-1, 0, 1));
+        drivingSpacer = new View(this);
+        screen.addView(drivingSpacer, new LinearLayout.LayoutParams(-1, 0, 1));
+        LinearLayout driveConsole = new LinearLayout(this);
+        driveConsole.setOrientation(LinearLayout.VERTICAL);
+        driveConsole.setPadding(dp(12), dp(6), dp(12), dp(8));
+        driveConsole.setBackgroundColor(Color.rgb(232, 239, 246));
+        screen.addView(driveConsole, new LinearLayout.LayoutParams(-1, -2));
+        TextView heading = label(root, "進階設定與除錯", 17);
         heading.setTypeface(null, Typeface.BOLD);
-        label(root, "先連原廠小車 Wi-Fi。控制封包已對照原廠 APK；車端是否收到仍需實機確認。", 13);
-        netStatus = label(root, "網路待診斷", 13);
+        label(root, "FPV 與駕駛控制固定顯示；此區為設定、Gemini 與 Debug。", 13);
         row(root, button("開 Wi-Fi 設定", v -> startActivity(new Intent(Settings.ACTION_WIFI_SETTINGS))),
                 button("網路診斷", v -> {
                     routes.diagnostics();
-                    netStatus.setText("Car Wi-Fi=" + (routes.wifi() != null)
-                            + "  Gemini internet=" + (routes.internet(routes.wifi()) != null));
+                    updateNetworkStatus();
                 }));
 
         label(root, "1. FPV 攝影機（WLtoys UDP H.265 / HTTP）", 17).setTypeface(null, Typeface.BOLD);
@@ -150,22 +226,12 @@ public final class MainActivity extends Activity {
         root.addView(cameraAdapter);
         cameraUrl = field(root, "HTTP 模式才需填影像 URL",
                 saved("camera_url", ""), false);
-        cameraStatus = label(root, "鏡頭未連線", 13);
-        label(root, "6405 請選 UDP H.265，按「連線攝影機」；黑畫面時狀態會顯示收包與解碼數。", 12);
-        preview = new ImageView(this);
-        preview.setBackgroundColor(Color.rgb(25, 33, 43));
-        preview.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        preview.setMinimumHeight(dp(210));
-        root.addView(preview, new LinearLayout.LayoutParams(-1, dp(220)));
-        hevcPreview = new SurfaceView(this);
-        hevcPreview.setBackgroundColor(Color.rgb(25, 33, 43));
-        root.addView(hevcPreview, new LinearLayout.LayoutParams(-1, dp(220)));
+        label(root, "6405 使用 UDP H.265；若黑畫面，查看收包／組幀／解碼數。", 12);
         preview.setVisibility(cameraAdapter.getSelectedItemPosition() == 0 ? View.GONE : View.VISIBLE);
         hevcPreview.setVisibility(cameraAdapter.getSelectedItemPosition() == 0 ? View.VISIBLE : View.GONE);
         cameraAdapter.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(android.widget.AdapterView<?> parent, View view, int position, long id) {
-                camera.stop();
-                wltoysVideo.stop();
+                stopCameraReceiver();
                 currentCameraAdapter = position;
                 lastCameraFrame = 0;
                 lastFrameWidth = 0;
@@ -174,17 +240,22 @@ public final class MainActivity extends Activity {
                 if (arm != null) uncheck();
                 preview.setVisibility(position == 0 ? View.GONE : View.VISIBLE);
                 hevcPreview.setVisibility(position == 0 ? View.VISIBLE : View.GONE);
+                maybeStartCamera();
             }
             @Override public void onNothingSelected(android.widget.AdapterView<?> parent) {}
         });
-        row(root, button("連線攝影機", v -> startCamera()),
+        row(root, button("重新連接攝影機", v -> {
+                    cameraWanted = true;
+                    cameraManualRequested = true;
+                    stopCameraReceiver();
+                    maybeStartCamera();
+                }),
                 button("停止影像", v -> {
-                    camera.stop();
-                    wltoysVideo.stop();
-                    lastCameraFrame = 0;
-                    cameraStatus.setText("影像停止");
-                    control.disarm();
-                    arm.setChecked(false);
+                    cameraWanted = false;
+                    cameraManualRequested = false;
+                    stopCameraReceiver();
+                    cameraStatus.setText("影像已手動停止");
+                    emergencyStopAndLock();
                 }));
 
         label(root, "2. 小車控制（原廠 App log 部分觀察）", 17).setTypeface(null, Typeface.BOLD);
@@ -216,16 +287,12 @@ public final class MainActivity extends Activity {
         for (String d : new String[]{"forward","backward","left","right","stop"}) {
             packets.put(d, field(root, d + " 封包（空白 = 禁止解鎖）", saved("packet_" + d, ""), false));
         }
-        row(root, button("套用連線設定", v -> applyConfig()), button("立即停止", v -> {
-            releaseManualInputs();
-            control.emergencyStop();
-            log.i("UI", "emergency stop tapped");
-        }));
+        row(root, button("套用連線設定", v -> applyConfig()), button("立即停止", v -> emergencyStopAndLock()));
 
         arm = new CheckBox(this);
         arm.setText("解鎖手動控制／AI 短距離指令（先清空周圍，確認車輪懸空測試）");
         arm.setTextSize(13);
-        root.addView(arm);
+        driveConsole.addView(arm);
         arm.setOnCheckedChangeListener((view, checked) -> {
             if (changingConfig) return;
             if (checked) {
@@ -242,15 +309,31 @@ public final class MainActivity extends Activity {
         });
         label(root, "按住移動；所有方向鍵放開才送 STOP。斷訊 / 逾時也會嘗試送 STOP；未收到車輛 ACK。", 12);
 
-        row(root, button("急停 STOP", v -> {
-                    releaseManualInputs();
-                    control.emergencyStop();
-                }),
-                held("▲ 前進", "forward"),
-                button("重新診斷", v -> routes.diagnostics()));
-        row(root, held("◀ 左轉", "left"),
-                held("▼ 後退", "backward"),
-                held("▶ 右轉", "right"));
+        Button stopButton = button("■ 緊急停止 · 停止後上鎖", v -> emergencyStopAndLock());
+        stopButton.setTextColor(Color.WHITE);
+        stopButton.setBackgroundTintList(android.content.res.ColorStateList.valueOf(Color.rgb(177, 36, 42)));
+        stopButton.setTextSize(16);
+        driveConsole.addView(stopButton, new LinearLayout.LayoutParams(-1, dp(52)));
+        drivePad = new DrivePadView(this, (steer, throttle) -> {
+            heldSteer = steer;
+            heldThrottle = throttle;
+            main.removeCallbacks(manualPulse);
+            if (steer == 0 && throttle == 0) {
+                control.setManual(false);
+                control.emergencyStop();
+                return;
+            }
+            if (!control.armed()) {
+                drivePad.cancelInput();
+                log.e("SAFETY", "driving pad blocked: locked");
+                return;
+            }
+            control.setManual(true);
+            String result = control.driveManualAxes(steer, throttle);
+            if (result.startsWith("blocked")) log.e("SAFETY", result);
+            else main.postDelayed(manualPulse, 180);
+        });
+        driveConsole.addView(drivePad, new LinearLayout.LayoutParams(-1, dp(188)));
 
         label(root, "3. Gemini 3.8 Live（手機麥克風 + 車頭畫面）", 17).setTypeface(null, Typeface.BOLD);
         label(root, "使用自己的 API Key；只放在記憶體，不寫入設定與 Log。連小車 Wi-Fi 時請保持行動數據。", 12);
@@ -287,8 +370,29 @@ public final class MainActivity extends Activity {
         }), button("重新檢查網路", v -> routes.diagnostics()));
         logs = label(root, "", 11);
         logs.setTextIsSelectable(true);
-        netStatus.setText("Car Wi-Fi=" + (routes.wifi() != null) +
-                "  Gemini internet=" + (routes.internet(routes.wifi()) != null));
+        updateNetworkStatus();
+        updateMode();
+    }
+
+    private void toggleMode() {
+        drivingMode = !drivingMode;
+        updateMode();
+    }
+
+    private void updateMode() {
+        if (settingsScroller == null || drivingSpacer == null || modeButton == null) return;
+        settingsScroller.setVisibility(drivingMode ? View.GONE : View.VISIBLE);
+        drivingSpacer.setVisibility(drivingMode ? View.VISIBLE : View.GONE);
+        modeButton.setText(drivingMode ? "設定／診斷" : "返回駕駛");
+    }
+
+    private void updateNetworkStatus() {
+        if (netStatus != null) {
+            Network wifi = routes.wifi();
+            netStatus.setText("小車 Wi-Fi：" + (wifi == null ? "未連線" : "有連線") +
+                    "  |  Gemini 網路：" + (routes.internet(wifi) == null ? "不可用" : "可用") +
+                    "  |  車輛回執：未支援");
+        }
     }
 
     private void uncheck() {
@@ -330,117 +434,94 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private void startCamera() {
-        camera.stop();
-        wltoysVideo.stop();
-        String url = cameraUrl.getText().toString().trim();
-        getPreferences(MODE_PRIVATE).edit().putString("camera_url", url)
-                .putInt("camera_adapter", cameraAdapter.getSelectedItemPosition()).apply();
+    /** Auto-connect on offline car Wi-Fi; manual reconnect can override the check. */
+    private void maybeStartCamera() {
+        if (!foreground || !cameraWanted || cameraRunning || cameraAdapter == null) return;
+        Network wifi = routes.wifi();
+        if (wifi == null) {
+            cameraStatus.setText("等待小車 Wi-Fi 連線…");
+            return;
+        }
+        if (!cameraManualRequested && routes.isValidatedInternet(wifi)) {
+            cameraStatus.setText("等待小車離線 Wi-Fi；一般網路不自動連攝影機");
+            return;
+        }
+        if (cameraAdapter.getSelectedItemPosition() == 0 &&
+                !hevcPreview.getHolder().getSurface().isValid()) {
+            cameraStatus.setText("等待 FPV 畫面 Surface 就緒…");
+            return;
+        }
+        cameraRunning = true;
+        cameraNetwork = wifi;
+        startCamera(++cameraSession);
+    }
+
+    private void stopCameraReceiver() {
+        ++cameraSession;
+        cameraRunning = false;
+        cameraNetwork = null;
+        if (camera != null) camera.stop();
+        if (wltoysVideo != null) wltoysVideo.stop();
         lastCameraFrame = 0;
         lastFrameWidth = 0;
         lastFrameHeight = 0;
+    }
+
+    private void startCamera(long token) {
+        String url = cameraUrl.getText().toString().trim();
+        getPreferences(MODE_PRIVATE).edit().putString("camera_url", url)
+                .putInt("camera_adapter", cameraAdapter.getSelectedItemPosition()).apply();
         currentCameraAdapter = cameraAdapter.getSelectedItemPosition();
-        cameraStatus.setText("影像連線中…");
-        if (cameraAdapter.getSelectedItemPosition() == 0) {
+        cameraStatus.setText("攝影機連線中…");
+        if (currentCameraAdapter == 0) {
             String destination = host.getText().toString().trim();
             wltoysVideo.start(destination, hevcPreview, frame -> {
+                if (!foreground || token != cameraSession) return;
                 lastFrameWidth = frame.getWidth();
                 lastFrameHeight = frame.getHeight();
                 lastCameraFrame = SystemClock.elapsedRealtime();
                 gemini.frame(frame);
-                if (!isFinishing()) cameraStatus.setText("H.265 解碼影格 " +
-                        frame.getWidth() + "×" + frame.getHeight());
+                cameraStatus.setText("HEVC " + frame.getWidth() + "×" + frame.getHeight() +
+                        "｜新畫面已接收");
             }, status -> {
-                if (!isFinishing() && cameraStatus != null) cameraStatus.setText(status);
+                if (foreground && token == cameraSession && cameraStatus != null)
+                    cameraStatus.setText(status);
             });
         } else {
             camera.start(url, frame -> {
+                if (!foreground || token != cameraSession) return;
                 lastFrameWidth = frame.getWidth();
                 lastFrameHeight = frame.getHeight();
                 lastCameraFrame = SystemClock.elapsedRealtime();
                 gemini.frame(frame);
                 runOnUiThread(() -> {
-                    if (!isFinishing()) {
+                    if (foreground && token == cameraSession && !isFinishing()) {
                         preview.setImageBitmap(frame);
-                        cameraStatus.setText("JPEG 影格 " + frame.getWidth() + "×" +
-                                frame.getHeight());
+                        cameraStatus.setText("JPEG " + frame.getWidth() + "×" + frame.getHeight());
                     }
                 });
             });
         }
     }
 
-    private Button held(String title, String direction) {
-        Button b = button(title, v -> {});
-        final int[] activePointer = {-1};
-        b.setOnTouchListener((view, event) -> {
-            int action = event.getActionMasked();
-            if (action == MotionEvent.ACTION_DOWN) {
-                view.getParent().requestDisallowInterceptTouchEvent(true);
-                activePointer[0] = event.getPointerId(event.getActionIndex());
-                if (!control.armed()) { log.e("SAFETY", "manual denied: locked"); return true; }
-                heldDirections.add(direction);
-                control.setManual(true);
-                sendHeldMotion();
-                startManualPulse();
-                return true;
-            }
-            boolean pointerReleased = action == MotionEvent.ACTION_CANCEL || action == MotionEvent.ACTION_UP ||
-                    (action == MotionEvent.ACTION_POINTER_UP &&
-                            event.getPointerId(event.getActionIndex()) == activePointer[0]);
-            if (pointerReleased) {
-                activePointer[0] = -1;
-                heldDirections.remove(direction);
-                if (heldDirections.isEmpty()) {
-                    releaseManualInputs();
-                    control.emergencyStop();
-                } else {
-                    sendHeldMotion();
-                }
-                return true;
-            }
-            return true;
-        });
-        return b;
-    }
-
-    private void sendHeldMotion() {
-        if (heldDirections.isEmpty() || !control.armed()) return;
-        int steer = (heldDirections.contains("right") ? 1 : 0) -
-                (heldDirections.contains("left") ? 1 : 0);
-        int throttle = (heldDirections.contains("forward") ? 1 : 0) -
-                (heldDirections.contains("backward") ? 1 : 0);
-        control.setManual(true);
-        String result = control.driveManualAxes(steer, throttle);
-        if (result.startsWith("blocked")) {
-            if (!result.equals(lastManualIssue)) log.e("SAFETY", result);
-            lastManualIssue = result;
-        } else lastManualIssue = "";
-    }
-
-    private void startManualPulse() {
-        if (manualPulse == null) {
-            manualPulse = new Runnable() {
-                @Override public void run() {
-                    if (heldDirections.isEmpty() || !control.armed()) {
-                        releaseManualInputs();
-                        return;
-                    }
-                    sendHeldMotion();
-                    main.postDelayed(this, 180);
-                }
-            };
-        }
-        main.removeCallbacks(manualPulse);
-        main.post(manualPulse);
-    }
-
     private void releaseManualInputs() {
-        heldDirections.clear();
-        if (manualPulse != null) main.removeCallbacks(manualPulse);
-        manualPulse = null;
-        lastManualIssue = "";
+        heldSteer = 0;
+        heldThrottle = 0;
+        main.removeCallbacks(manualPulse);
+        if (drivePad != null) drivePad.cancelInput();
         if (control != null) control.setManual(false);
+    }
+
+    private void emergencyStopAndLock() {
+        releaseManualInputs();
+        control.disarm();
+        control.emergencyStop();
+        if (arm != null && arm.isChecked()) {
+            changingConfig = true;
+            arm.setChecked(false);
+            changingConfig = false;
+        }
+        log.i("SAFETY", "USER E-STOP: disarmed, manual re-arm required");
     }
 
     private void startGemini() {
@@ -564,20 +645,26 @@ public final class MainActivity extends Activity {
 
     @Override protected void onPause() {
         super.onPause();
+        foreground = false;
+        main.removeCallbacks(cameraMonitor);
+        releaseManualInputs();
         if (control != null) control.disarm();
         if (arm != null) uncheck();
         if (gemini != null) gemini.stopMic();
-        if (camera != null) camera.stop();
-        if (wltoysVideo != null) wltoysVideo.stop();
-        lastCameraFrame = 0;
-        lastFrameWidth = 0;
-        lastFrameHeight = 0;
-        releaseManualInputs();
+        stopCameraReceiver();
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        foreground = true;
+        updateNetworkStatus();
+        main.removeCallbacks(cameraMonitor);
+        main.post(cameraMonitor);
     }
 
     @Override protected void onDestroy() {
-        if (camera != null) camera.stop();
-        if (wltoysVideo != null) wltoysVideo.stop();
+        main.removeCallbacks(cameraMonitor);
+        stopCameraReceiver();
         if (gemini != null) gemini.disconnect();
         if (control != null) control.shutdown();
         super.onDestroy();
