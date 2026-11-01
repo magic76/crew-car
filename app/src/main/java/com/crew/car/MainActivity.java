@@ -19,6 +19,7 @@ import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.ImageView;
+import android.view.SurfaceView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Spinner;
@@ -36,12 +37,14 @@ public final class MainActivity extends Activity {
     private CarNetwork routes;
     private CarControl control;
     private CameraStream camera;
+    private WltoysVideoStream wltoysVideo;
     private GeminiLive gemini;
 
     private EditText host, port, cameraUrl, key, prompt;
-    private Spinner transport, encoding;
+    private Spinner transport, encoding, profile, cameraAdapter;
     private TextView netStatus, cameraStatus, liveStatus, transcript, logs;
     private ImageView preview;
+    private SurfaceView hevcPreview;
     private CheckBox arm;
     private volatile long lastCameraFrame;
     private boolean changingConfig;
@@ -53,6 +56,7 @@ public final class MainActivity extends Activity {
         routes = new CarNetwork(this, log);
         control = new CarControl(routes, log);
         camera = new CameraStream(routes, log);
+        wltoysVideo = new WltoysVideoStream(routes, log);
         gemini = new GeminiLive(log);
         render();
         log.setListener(s -> runOnUiThread(() -> { if (logs != null) logs.setText(s); }));
@@ -129,8 +133,13 @@ public final class MainActivity extends Activity {
                             + "  Gemini internet=" + (routes.internet(routes.wifi()) != null));
                 }));
 
-        label(root, "1. FPV 攝影機（HTTP JPEG / MJPEG adapter）", 17).setTypeface(null, Typeface.BOLD);
-        cameraUrl = field(root, "實測 URL，例如 http://<camera-ip>/<path>",
+        label(root, "1. FPV 攝影機（WLtoys UDP H.265 / HTTP）", 17).setTypeface(null, Typeface.BOLD);
+        cameraAdapter = new Spinner(this);
+        cameraAdapter.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item,
+                new String[]{"WLtoys 6405 UDP H.265（候選協定）", "HTTP JPEG/MJPEG（自訂）"}));
+        cameraAdapter.setSelection(getPreferences(MODE_PRIVATE).getInt("camera_adapter", 0));
+        root.addView(cameraAdapter);
+        cameraUrl = field(root, "HTTP 模式才需填影像 URL",
                 saved("camera_url", ""), false);
         cameraStatus = label(root, "鏡頭未連線", 13);
         preview = new ImageView(this);
@@ -138,9 +147,27 @@ public final class MainActivity extends Activity {
         preview.setScaleType(ImageView.ScaleType.FIT_CENTER);
         preview.setMinimumHeight(dp(210));
         root.addView(preview, new LinearLayout.LayoutParams(-1, dp(220)));
+        hevcPreview = new SurfaceView(this);
+        hevcPreview.setBackgroundColor(Color.rgb(25, 33, 43));
+        root.addView(hevcPreview, new LinearLayout.LayoutParams(-1, dp(220)));
+        preview.setVisibility(cameraAdapter.getSelectedItemPosition() == 0 ? View.GONE : View.VISIBLE);
+        hevcPreview.setVisibility(cameraAdapter.getSelectedItemPosition() == 0 ? View.VISIBLE : View.GONE);
+        cameraAdapter.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(android.widget.AdapterView<?> parent, View view, int position, long id) {
+                camera.stop();
+                wltoysVideo.stop();
+                lastCameraFrame = 0;
+                control.disarm();
+                if (arm != null) uncheck();
+                preview.setVisibility(position == 0 ? View.GONE : View.VISIBLE);
+                hevcPreview.setVisibility(position == 0 ? View.VISIBLE : View.GONE);
+            }
+            @Override public void onNothingSelected(android.widget.AdapterView<?> parent) {}
+        });
         row(root, button("連線攝影機", v -> startCamera()),
                 button("停止影像", v -> {
                     camera.stop();
+                    wltoysVideo.stop();
                     lastCameraFrame = 0;
                     cameraStatus.setText("影像停止");
                     control.disarm();
@@ -148,8 +175,14 @@ public final class MainActivity extends Activity {
                 }));
 
         label(root, "2. 小車控制（封包需從原廠 App 實測）", 17).setTypeface(null, Typeface.BOLD);
-        host = field(root, "控制端 IP，請依 Wi-Fi 閘道及封包確認", saved("host", ""), false);
-        port = field(root, "控制 Port", saved("port", ""), true);
+        profile = new Spinner(this);
+        profile.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item,
+                new String[]{"自訂封包（預設上鎖）", "WLtoys 6405/6401 公開候選協定（實車確認後使用）"}));
+        profile.setSelection(getPreferences(MODE_PRIVATE).getInt("protocol_profile", 0));
+        root.addView(profile);
+        label(root, "6405 模式：UDP 23458、16-byte 控制封包、每 100ms 心跳。不同車型不可直接假設相容。", 12);
+        host = field(root, "控制端 IP", saved("host", "172.16.11.1"), false);
+        port = field(root, "自訂模式控制 Port（6405 模式固定 23458）", saved("port", ""), true);
         transport = new Spinner(this);
         transport.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item,
                 new String[]{"UDP", "TCP"}));
@@ -235,8 +268,10 @@ public final class MainActivity extends Activity {
         try {
             CarControl.Config cfg = new CarControl.Config();
             cfg.host = host.getText().toString().trim();
-            cfg.port = Integer.parseInt(port.getText().toString().trim());
-            cfg.tcp = transport.getSelectedItemPosition() == 1;
+            cfg.wltoys = profile.getSelectedItemPosition() == 1;
+            cfg.port = cfg.wltoys ? WltoysProtocol.CONTROL_PORT :
+                    Integer.parseInt(port.getText().toString().trim());
+            cfg.tcp = !cfg.wltoys && transport.getSelectedItemPosition() == 1;
             cfg.hex = encoding.getSelectedItemPosition() == 0;
             for (Map.Entry<String, EditText> e : packets.entrySet()) {
                 String value = e.getValue().getText().toString().trim();
@@ -248,6 +283,8 @@ public final class MainActivity extends Activity {
                     .putString("camera_url", cameraUrl.getText().toString().trim())
                     .putInt("transport", transport.getSelectedItemPosition())
                     .putInt("encoding", encoding.getSelectedItemPosition())
+                    .putInt("protocol_profile", profile.getSelectedItemPosition())
+                    .putInt("camera_adapter", cameraAdapter.getSelectedItemPosition())
                     .apply();
             control.configure(cfg);
             log.i("UI", "control config applied, safety lock ON");
@@ -259,21 +296,34 @@ public final class MainActivity extends Activity {
     }
 
     private void startCamera() {
+        camera.stop();
+        wltoysVideo.stop();
         String url = cameraUrl.getText().toString().trim();
-        getPreferences(MODE_PRIVATE).edit().putString("camera_url", url).apply();
+        getPreferences(MODE_PRIVATE).edit().putString("camera_url", url)
+                .putInt("camera_adapter", cameraAdapter.getSelectedItemPosition()).apply();
         lastCameraFrame = 0;
         cameraStatus.setText("影像連線中…");
-        camera.start(url, frame -> {
-            lastCameraFrame = SystemClock.elapsedRealtime();
-            gemini.frame(frame);
-            runOnUiThread(() -> {
-                if (!isFinishing()) {
-                    preview.setImageBitmap(frame);
-                    cameraStatus.setText("鏡頭 " + frame.getWidth() + "×" + frame.getHeight() +
-                            "｜最後影格 " + SystemClock.elapsedRealtime());
-                }
+        if (cameraAdapter.getSelectedItemPosition() == 0) {
+            String destination = host.getText().toString().trim();
+            wltoysVideo.start(destination, hevcPreview, frame -> {
+                lastCameraFrame = SystemClock.elapsedRealtime();
+                gemini.frame(frame);
+                if (!isFinishing()) cameraStatus.setText("H.265 解碼影格 " +
+                        frame.getWidth() + "×" + frame.getHeight());
             });
-        });
+        } else {
+            camera.start(url, frame -> {
+                lastCameraFrame = SystemClock.elapsedRealtime();
+                gemini.frame(frame);
+                runOnUiThread(() -> {
+                    if (!isFinishing()) {
+                        preview.setImageBitmap(frame);
+                        cameraStatus.setText("JPEG 影格 " + frame.getWidth() + "×" +
+                                frame.getHeight());
+                    }
+                });
+            });
+        }
     }
 
     private Button held(String title, String direction) {
@@ -352,11 +402,13 @@ public final class MainActivity extends Activity {
         if (control != null) control.disarm();
         if (arm != null) uncheck();
         if (gemini != null) gemini.stopMic();
+        if (wltoysVideo != null) wltoysVideo.stop();
         if (repeatedMotion != null) main.removeCallbacks(repeatedMotion);
     }
 
     @Override protected void onDestroy() {
         if (camera != null) camera.stop();
+        if (wltoysVideo != null) wltoysVideo.stop();
         if (gemini != null) gemini.disconnect();
         if (control != null) control.shutdown();
         super.onDestroy();

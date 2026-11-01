@@ -40,3 +40,11 @@ There is a **manual-only** GitHub Actions workflow (`Android APK (manual only)`)
 **Important:** The FPV camera is low-frequency visual context for Gemini (<=1 fps), **not** collision prevention. The implementation has no autonomous obstacle avoidance, ranging, or guarantee a STOP packet reaches the hardware if Wi-Fi fails. Never run unattended; keep physical access to a power switch.
 
 Handoff details: [docs/ADB_HANDOFF.md](docs/ADB_HANDOFF.md).
+
+## Open-source WLtoys 6405 protocol candidate (2026-11-01)
+
+Research reference: https://github.com/lcgamboa/WL-Tech-FPV-CAR-6405 — the contributor independently captured the original app and decoded a **16-byte UDP control protocol** addressed to `172.16.11.1:23458`. Camera command UDP port `23459` and video receive UDP port `1234` are separately documented. The 6405 camera emits proprietary fragmented **HEVC/H.265**, not HTTP MJPEG; model 6401 reportedly uses `rtsp://172.16.11.1/live/ch00_1`. Protocol support is **experimental until the owner's physical model and firmware are confirmed**.
+
+The UI now includes an **explicit, non-default** WLtoys 6405/6401 motor profile and a **candidate** 6405 UDP/H.265 video adapter using Android MediaCodec + PixelCopy. Do not infer vehicle compatibility from the app name alone; only arm with the car's wheels suspended and a reachable power switch. The 100ms periodic neutral-control keepalive mirrors the reference implementation.
+
+The camera implementation and Gemini 3.8 Live network/API integration have not been compiled or tested on the owner's device. Follow `docs/ADB_HANDOFF.md` before declaring hardware success.
