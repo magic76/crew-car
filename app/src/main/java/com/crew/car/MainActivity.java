@@ -411,21 +411,32 @@ public final class MainActivity extends Activity {
                         "last_tx_direction", control.lastTxCommand(),
                         "last_tx_status", control.lastTxStatus(),
                         "last_tx_age_ms", control.lastTxAgeMs(),
+                        "hardware_sensor", "camera_only",
+                        "distance_sensor_available", false,
+                        "odometry_available", false,
+                        "battery_telemetry_available", false,
                         "motor_position_known", false,
                         "device_ack_supported", false,
                         "camera_fresh", cameraAgeMs() >= 0 && cameraAgeMs() <= 2500);
             }
             @Override public JSONObject onCameraStatus() {
                 long age = cameraAgeMs();
+                long liveAge = gemini.liveVideoAgeMs();
                 return toolJson(
+                        "sensor_type", "camera_only",
                         "adapter", currentCameraAdapter == 0 ? "WLtoys 6405 UDP HEVC candidate" : "HTTP JPEG/MJPEG",
                         "frames_received", lastCameraFrame != 0,
                         "last_frame_age_ms", age,
                         "fresh", age >= 0 && age <= 2500,
                         "width", lastFrameWidth,
                         "height", lastFrameHeight,
+                        "live_video_frame_queue_age_ms", liveAge,
+                        "live_video_fresh", liveAge >= 0 && liveAge <= 2500,
+                        "live_video_frames_queued", gemini.liveVideoFramesQueued(),
                         "scene_recognition_available_here", false,
-                        "note", "Live receives limited video frames separately; this tool only reports receive health");
+                        "distance_sensor_available", false,
+                        "collision_sensor_available", false,
+                        "note", "Camera only: JPEG queued to Live != model received/understood it. No measured depth or obstacle clearance.");
             }
             @Override public JSONObject onNetworkStatus() {
                 android.net.Network car = routes.wifi();
@@ -448,6 +459,9 @@ public final class MainActivity extends Activity {
                 if (SystemClock.elapsedRealtime() - lastCameraFrame > 2500 || lastCameraFrame == 0)
                     return "blocked: camera stale/unavailable";
                 if (routes.wifi() == null) return "blocked: car Wi-Fi disconnected";
+                long liveAge = gemini.liveVideoAgeMs();
+                if (liveAge < 0 || liveAge > 2500)
+                    return "blocked: recent camera JPEG not queued to Gemini Live";
                 return control.drive(direction, duration, true);
             }
             @Override public void onTranscript(String text) {

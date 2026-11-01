@@ -35,9 +35,9 @@ public final class GeminiCarTools {
                 .put(action("lock_car",
                         "Disarm motor control and issue STOP. Lock can only be released by the human through the app UI."))
                 .put(action("get_car_status",
-                        "Read actual application safety/drive status, last attempted TX result and camera age; no physical motion or battery telemetry is available."))
+                        "Read ONLY Android application command status, manual safety lock and camera age. This is not physical car telemetry: the only sensor is a camera. No speed, distance, battery, position or movement feedback."))
                 .put(action("get_camera_status",
-                        "Check whether camera frames are being received recently, the last frame resolution and source adapter. Do not claim this tool sees the scene or detects obstacles."))
+                        "Read camera frame age, source and resolution AND whether a recent image was queued to Gemini Live. The only hardware sensor is the camera. This function reports transport health, not image contents, depth or obstacle clearance."))
                 .put(action("get_network_status",
                         "Read connectivity of car Wi-Fi and separate internet route used for Gemini Live. No network reset or switching is performed."));
     }
