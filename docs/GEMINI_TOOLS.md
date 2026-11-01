@@ -52,3 +52,15 @@ Each tool response contains a Gemini call ID when one is supplied, a machine-rea
 API: [Gemini Live WebSocket reference](https://ai.google.dev/api/live) and [Live tool use](https://ai.google.dev/gemini-api/docs/live-api/tools). Source modules: `GeminiLive.java`, `GeminiCarTools.java`, `CarToolPolicy.java`, `MainActivity.java`, `CarControl.java`. Unit tests: `CarToolPolicyTest.java`.
 
 The source may be compiled via `gradle :app:testDebugUnitTest :app:assembleDebug` once the Android SDK / Gradle toolchain is available. Do not claim device validation from a successful compile.
+
+## Confirmed hardware inventory — camera only
+
+The user's car has **one camera** and remote motor control. There are **no other sensors**. Consequently:
+
+- The only external observation is the camera image carried over Gemini Live video (<=1 JPEG per second); the `get_camera_status` tool reports receive/upload **metadata**, not image recognition.
+- No GPS, ultrasonic range finder, LiDAR, IMU/odometry, bumper sensor, battery telemetry, or guaranteed motor acknowledgement is available.
+- `get_car_status` is an **Android command/control-state report**. The field `last_tx_status=sent_without_hardware_ack` does not prove the car received the command or moved.
+- New `get_camera_status` fields: `live_video_frame_queue_age_ms`, `live_video_fresh`, `live_video_frames_queued`. They describe images accepted by the WebSocket send queue, **not server acknowledgement**.
+- AI motor requests now additionally require a camera image to have been queued to the active Gemini Live session within 2.5s. This is necessary but not sufficient to prove visual perception or physical safety.
+- Gemini can describe *visible* features from received frames, but cannot reliably calculate speed, safe clearance, traveled meters or true steering angle from the monocular camera alone.
+- No on-device autonomous route planning or obstacle avoidance is enabled; always retain human oversight, physical shutdown access and short bounded pulses.

@@ -49,7 +49,9 @@ public final class GeminiLive {
     private volatile WebSocket socket;
     private volatile boolean ready;
     private volatile boolean micRunning;
+    /** Time of the last JPEG accepted into the Live WebSocket send queue. */
     private volatile long lastFrameSent;
+    private volatile long videoFramesQueued;
     private volatile AudioRecord recorder;
     private Thread micThread;
     private OkHttpClient client;
@@ -64,6 +66,13 @@ public final class GeminiLive {
     public GeminiLive(CarLog log) { this.log = log; }
     public boolean ready() { return ready; }
     public boolean micRunning() { return micRunning; }
+    /** -1 means no frame was accepted by the current Live session. */
+    public long liveVideoAgeMs() {
+        long last = lastFrameSent;
+        return last <= 0 || !ready ? -1 :
+                Math.max(0, SystemClock.elapsedRealtime() - last);
+    }
+    public long liveVideoFramesQueued() { return videoFramesQueued; }
 
     public synchronized void connect(String apiKey, Network internet, Listener callback) {
         disconnect();
@@ -79,6 +88,7 @@ public final class GeminiLive {
         this.listener = callback;
         this.ready = false;
         this.lastFrameSent = 0L;
+        this.videoFramesQueued = 0L;
         client = new OkHttpClient.Builder()
                 .socketFactory(internet.getSocketFactory())
                 .dns(host -> Arrays.asList(internet.getAllByName(host)))
@@ -123,6 +133,9 @@ public final class GeminiLive {
         try {
             String instruction = "你是 Crew Car 的繁體中文語音助手。你可以看到低頻率車頭影像，也可聽使用者說話。" +
                     "可用工具：get_car_status 查安全鎖與最後傳送狀態、get_camera_status 查鏡頭新鮮度、get_network_status 查網路、stop_car 立即送 STOP、lock_car 鎖車、drive_car 短促移動。" +
+                    "硬體只有車頭攝影機，沒有超音波、雷達、碰撞、GPS、里程計或電量遙測等其他感測器。" +
+                    "你只能從傳入的即時畫面描述可見物體和大致方向；無法測量真實距離、車速、位置、實際轉角或是否已成功移動。" +
+                    "get_camera_status 只讀取畫面接收與 Live 傳送狀態，不包含畫面內容；不要把它誤當避障感測器。" +
                     "先用只讀工具回答車況，不能編造電池量、位置、距離、實際移動、障礙物偵測或感測器資料。" +
                     "只有使用者明確要求移動，才使用 drive_car，duration_ms 必須在 100–650 毫秒。不得自行連續移動、追人、追車或規劃自主導航。" +
                     "若鏡頭未更新、看不清路況、看見人或障礙物、或指令不明確，請停止並詢問。" +
@@ -314,24 +327,47 @@ public final class GeminiLive {
         } catch (Exception e) { return false; }
     }
 
-    public void frame(Bitmap original) {
-        if (!ready || socket == null) return;
+    /** Queue at most 1 JPEG/second; do not report it as delivered or visually understood. */
+    public synchronized void frame(Bitmap original) {
+        WebSocket target = socket;
+        if (!ready || target == null || original == null) return;
         long now = SystemClock.elapsedRealtime();
-        if (now - lastFrameSent < 1000 || socket.queueSize() > 1024 * 1024) return;
-        lastFrameSent = now;
+        if (lastFrameSent > 0 && now - lastFrameSent < 1000 ||
+                target.queueSize() > 1024 * 1024) return;
         try {
             float scale = Math.min(1f, 512f / Math.max(original.getWidth(), original.getHeight()));
             Bitmap sized = Bitmap.createScaledBitmap(original,
                     Math.max(1, Math.round(original.getWidth() * scale)),
                     Math.max(1, Math.round(original.getHeight() * scale)), true);
             ByteArrayOutputStream stream = new ByteArrayOutputStream(60 * 1024);
-            sized.compress(Bitmap.CompressFormat.JPEG, 68, stream);
-            if (sized != original) sized.recycle();
+            boolean encoded;
+            try {
+                encoded = sized.compress(Bitmap.CompressFormat.JPEG, 68, stream);
+            } finally {
+                if (sized != original) sized.recycle();
+            }
+            if (!encoded) {
+                log.e("VIDEO", "JPEG encode failed");
+                return;
+            }
+            byte[] bytes = stream.toByteArray();
             JSONObject m = new JSONObject().put("realtimeInput", new JSONObject()
                     .put("video", new JSONObject().put("mimeType", "image/jpeg")
-                            .put("data", Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP))));
-            socket.send(m.toString());
-        } catch (Exception e) { log.e("LIVE", "video frame error=" + e.getClass().getSimpleName()); }
+                            .put("data", Base64.encodeToString(bytes, Base64.NO_WRAP))));
+            boolean queued = target.send(m.toString());
+            if (queued && target == socket && ready) {
+                lastFrameSent = SystemClock.elapsedRealtime();
+                videoFramesQueued++;
+                if (videoFramesQueued % 5 == 1)
+                    log.i("VIDEO", "Live JPEG queued count=" + videoFramesQueued +
+                            " width=" + original.getWidth() +
+                            " height=" + original.getHeight() +
+                            " bytes=" + bytes.length +
+                            " (WebSocket queued, NOT model acknowledgement)");
+            } else log.e("VIDEO", "WebSocket video queue rejected frame");
+        } catch (Exception e) {
+            log.e("VIDEO", "video frame error=" + e.getClass().getSimpleName());
+        }
     }
 
     public synchronized void startMic() {
