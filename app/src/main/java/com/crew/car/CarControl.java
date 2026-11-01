@@ -10,6 +10,9 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /** Sole serial writer to the car. An explicit STOP packet is sent when movement times out. */
 public final class CarControl {
+    /** OEM app log showed 16-byte control sends at roughly 50 ms intervals. */
+    private static final long CONTROL_PERIOD_MS = 50;
+
     public static final class Config {
         public String host;
         public int port;
@@ -45,10 +48,10 @@ public final class CarControl {
             if (!"stop".equals(active) && SystemClock.elapsedRealtime() > deadline) {
                 stopInternal("watchdog");
             } else if (armed && config.wltoys) {
-                // Original 6405 protocol emits a new 16-byte state packet every ~100 ms.
+                // Match the ~50 ms send cadence observed in the owner's OEM app log.
                 sendInternal(active);
             }
-        }, 100, 100, TimeUnit.MILLISECONDS);
+        }, CONTROL_PERIOD_MS, CONTROL_PERIOD_MS, TimeUnit.MILLISECONDS);
     }
     public boolean armed() { return armed; }
     public boolean manual() { return manual; }
@@ -62,17 +65,20 @@ public final class CarControl {
 
     public synchronized void configure(Config next) {
         motionEpoch.incrementAndGet();
+        boolean stopPrevious = armed || !"stop".equals(active);
         armed = false;
         manual = false;
         deadline = 0;
         active = "stop";
         Config previous = config;
         config = next;
-        io.execute(() -> {
-            // Reconfiguration cannot redirect the old hardware STOP to the new IP/port.
-            sendInternal("stop", previous);
-            log.i("SAFETY", "STOP previous endpoint on reconfigure");
-        });
+        if (stopPrevious && hasStopPayload(previous)) {
+            io.execute(() -> {
+                // Reconfiguration cannot redirect the old hardware STOP to the new IP/port.
+                sendInternal("stop", previous);
+                log.i("SAFETY", "STOP previous endpoint on reconfigure");
+            });
+        }
         log.i("CTRL", "config host=" + next.host + ":" + next.port +
                 " transport=" + (next.tcp ? "TCP" : "UDP") + " payload=" + (next.hex ? "HEX" : "TEXT") +
                 " wltoysCandidate=" + next.wltoys);
@@ -98,10 +104,23 @@ public final class CarControl {
     }
 
     public void disarm() {
+        boolean stopCurrent = armed || !"stop".equals(active);
         armed = false;
         manual = false;
-        emergencyStop();
+        if (stopCurrent && hasStopPayload(config)) emergencyStop();
         log.i("SAFETY", "控制已上鎖");
+    }
+
+    private boolean hasStopPayload(Config c) {
+        if (c == null || c.host == null || c.host.isBlank() || c.port < 1 || c.port > 65535)
+            return false;
+        if (c.wltoys) return !c.tcp && c.port == WltoysProtocol.CONTROL_PORT;
+        try {
+            CommandCodec.encode(c.payloads.get("stop"), c.hex);
+            return true;
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
     }
 
     /** Duration is capped even if the model asks for an unbounded motion. */
@@ -126,18 +145,50 @@ public final class CarControl {
         }
     }
 
+    /** Manual two-axis input; the OEM profile can encode throttle and steering together. */
+    public String driveManualAxes(int steer, int throttle) {
+        if (steer < -1 || steer > 1 || throttle < -1 || throttle > 1)
+            return "blocked: axis must be -1, 0, or 1";
+        if (!armed) return "blocked: control locked";
+        if (steer == 0 && throttle == 0) {
+            emergencyStop();
+            return "stopped";
+        }
+        if (!config.wltoys) {
+            if (steer != 0 && throttle != 0)
+                return "blocked: custom profile has no combined-axis payload";
+            String direction = steer < 0 ? "left" : steer > 0 ? "right" :
+                    throttle > 0 ? "forward" : "backward";
+            return drive(direction, 480, false);
+        }
+        final String command = "axes:" + steer + ":" + throttle;
+        final long epoch = motionEpoch.get();
+        io.execute(() -> {
+            if (!armed || motionEpoch.get() != epoch || !manual) return;
+            active = command;
+            deadline = SystemClock.elapsedRealtime() + 500;
+            sendInternal(command);
+        });
+        return "queued axes " + steer + "," + throttle + " (unacknowledged)";
+    }
+
     public void emergencyStop() {
         motionEpoch.incrementAndGet();
+        Config target = config;
         deadline = 0;
         active = "stop";
-        io.execute(() -> stopInternal("E-STOP"));
+        io.execute(() -> stopInternal("E-STOP", target));
     }
 
     private void stopInternal(String reason) {
+        stopInternal(reason, config);
+    }
+
+    private void stopInternal(String reason, Config target) {
         active = "stop";
         deadline = 0;
         log.i("SAFETY", "STOP reason=" + reason);
-        sendInternal("stop");
+        sendInternal("stop", target);
     }
 
     private void sendInternal(String direction) {
@@ -146,15 +197,25 @@ public final class CarControl {
 
     private void sendInternal(String direction, Config c) {
         try {
-            byte[] bytes = c.wltoys ? WltoysProtocol.control(direction) :
-                    CommandCodec.encode(c.payloads.get(direction), c.hex);
+            byte[] bytes;
+            if (c.wltoys && direction.startsWith("axes:")) {
+                String[] axes = direction.split(":");
+                if (axes.length != 3) throw new IllegalArgumentException("bad axis command");
+                bytes = WltoysProtocol.control(Integer.parseInt(axes[1]), Integer.parseInt(axes[2]));
+            } else if (c.wltoys) {
+                bytes = WltoysProtocol.control(direction);
+            } else {
+                bytes = CommandCodec.encode(c.payloads.get(direction), c.hex);
+            }
             network.send(c.host, c.port, c.tcp, bytes);
             lastTxCommand = direction;
             lastTxStatus = "sent_without_hardware_ack";
             lastTxAt = SystemClock.elapsedRealtime();
             // Avoid flooding on-screen logs with 10 neutral heartbeats/sec.
             if (!"stop".equals(direction) || lastTxAt - lastStopLogAt >= 2000) {
-                log.i("TX", direction + " bytes=" + bytes.length + " hex=" + CommandCodec.hex(bytes) +
+                log.i("TX", direction + " target=" + c.host + ":" + c.port +
+                        " transport=" + (c.tcp ? "TCP" : "UDP") +
+                        " bytes=" + bytes.length + " hex=" + CommandCodec.hex(bytes) +
                         " (TX only; no device ACK)");
                 if ("stop".equals(direction)) lastStopLogAt = lastTxAt;
             }

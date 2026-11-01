@@ -22,16 +22,26 @@ public final class WltoysProtocol {
     private WltoysProtocol() { }
 
     public static byte[] control(String direction) {
-        int steer = CENTER;
-        int throttle = CENTER;
         switch (CommandCodec.direction(direction)) {
-            case "forward": throttle += THROTTLE_DELTA; break;
-            case "backward": throttle -= THROTTLE_DELTA; break;
-            case "left": steer -= STEERING_DELTA; break;
-            case "right": steer += STEERING_DELTA; break;
-            case "stop": break;
+            case "forward": return control(0, 1);
+            case "backward": return control(0, -1);
+            case "left": return control(-1, 0);
+            case "right": return control(1, 0);
+            case "stop": return control(0, 0);
             default: throw new IllegalArgumentException("bad direction");
         }
+    }
+
+    /**
+     * Encodes simultaneous steering and throttle axes. Each axis is -1, 0, or 1;
+     * this supports diagonal movement using the same frame layout as the OEM app.
+     */
+    public static byte[] control(int steerDirection, int throttleDirection) {
+        if (steerDirection < -1 || steerDirection > 1 ||
+                throttleDirection < -1 || throttleDirection > 1)
+            throw new IllegalArgumentException("axis must be -1, 0, or 1");
+        int steer = CENTER + steerDirection * STEERING_DELTA;
+        int throttle = CENTER + throttleDirection * THROTTLE_DELTA;
         return packet(steer, throttle, CENTER);
     }
 
