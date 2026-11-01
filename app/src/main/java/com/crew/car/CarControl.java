@@ -62,7 +62,8 @@ public final class CarControl {
     }
 
     private ScheduledFuture<?> scheduleTransmitter(CarTuning tuning) {
-        return io.scheduleAtFixedRate(() -> {
+        // Fixed-delay prevents a slow phone/UDP stack from creating catch-up packet bursts.
+        return io.scheduleWithFixedDelay(() -> {
             if (armed && config.wltoys) sendInternal(active);
         }, tuning.intervalMs, tuning.intervalMs, TimeUnit.MILLISECONDS);
     }
