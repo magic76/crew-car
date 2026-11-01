@@ -288,21 +288,7 @@ public final class MainActivity extends Activity {
             }
             @Override public void onNothingSelected(android.widget.AdapterView<?> parent) {}
         });
-        host = field(root, "控制端 IP", saved("host", "172.16.11.1"), false);
-        port = field(root, "自訂模式控制 Port（原廠 profile 固定 23458）", saved("port", "23458"), true);
-        transport = new Spinner(this);
-        transport.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item,
-                new String[]{"UDP", "TCP"}));
-        transport.setSelection(getPreferences(MODE_PRIVATE).getInt("transport", 0));
-        encoding = new Spinner(this);
-        encoding.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item,
-                new String[]{"HEX bytes", "UTF-8 text"}));
-        encoding.setSelection(getPreferences(MODE_PRIVATE).getInt("encoding", 0));
-        row(root, transport, encoding);
-        for (String d : new String[]{"forward","backward","left","right","stop"}) {
-            packets.put(d, field(root, d + " 封包（空白 = 禁止解鎖）", saved("packet_" + d, ""), false));
-        }
-        label(root, "3. 操控調校（可在無影像時測試手動操控）", 17)
+        label(root, "操控調校｜預設與實際週期", 17)
                 .setTypeface(null, Typeface.BOLD);
         label(root, "控制週期越短不一定越順。先以原廠 50ms 為基準；降低油門／轉向幅度可減少突兀感。", 12);
         tuningPreset = new Spinner(this);
@@ -355,6 +341,20 @@ public final class MainActivity extends Activity {
                 }));
         txDiagnostics = label(root, "本機封包診斷：尚未測試", 12);
         label(root, "本機傳送耗時／間隔不是小車回應時間，也不能用來推算實際車速。", 12);
+        host = field(root, "控制端 IP", saved("host", "172.16.11.1"), false);
+        port = field(root, "自訂模式控制 Port（原廠 profile 固定 23458）", saved("port", "23458"), true);
+        transport = new Spinner(this);
+        transport.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item,
+                new String[]{"UDP", "TCP"}));
+        transport.setSelection(getPreferences(MODE_PRIVATE).getInt("transport", 0));
+        encoding = new Spinner(this);
+        encoding.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item,
+                new String[]{"HEX bytes", "UTF-8 text"}));
+        encoding.setSelection(getPreferences(MODE_PRIVATE).getInt("encoding", 0));
+        row(root, transport, encoding);
+        for (String d : new String[]{"forward","backward","left","right","stop"}) {
+            packets.put(d, field(root, d + " 封包（空白 = 禁止解鎖）", saved("packet_" + d, ""), false));
+        }
         row(root, button("套用連線設定", v -> applyConfig()), button("立即停止", v -> emergencyStopAndLock()));
 
         arm = new CheckBox(this);
