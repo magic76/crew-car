@@ -181,6 +181,13 @@ public final class MainActivity extends Activity {
         profile.setSelection(getPreferences(MODE_PRIVATE).getInt("protocol_profile", 0));
         root.addView(profile);
         label(root, "6405 模式：UDP 23458、16-byte 控制封包、每 100ms 心跳。不同車型不可直接假設相容。", 12);
+        profile.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(android.widget.AdapterView<?> parent, View view, int position, long id) {
+                control.disarm();
+                if (arm != null) uncheck();
+            }
+            @Override public void onNothingSelected(android.widget.AdapterView<?> parent) {}
+        });
         host = field(root, "控制端 IP", saved("host", "172.16.11.1"), false);
         port = field(root, "自訂模式控制 Port（6405 模式固定 23458）", saved("port", ""), true);
         transport = new Spinner(this);

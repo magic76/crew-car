@@ -1,7 +1,6 @@
 package com.crew.car;
 
 import android.graphics.Bitmap;
-import android.graphics.PixelFormat;
 import android.media.MediaCodec;
 import android.media.MediaFormat;
 import android.net.Network;
@@ -9,13 +8,11 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.view.PixelCopy;
-import android.view.Surface;
 import android.view.SurfaceView;
 
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
@@ -32,6 +29,7 @@ public final class WltoysVideoStream {
     private final Handler main = new Handler(Looper.getMainLooper());
     private final AtomicBoolean copying = new AtomicBoolean();
     private volatile boolean running;
+    private volatile long sessionId;
     private volatile Thread worker;
     private volatile DatagramSocket listening;
 
@@ -50,13 +48,14 @@ public final class WltoysVideoStream {
             log.e("HEVC", "Surface not ready; retry after camera view is visible");
             return;
         }
+        long token = ++sessionId;
         running = true;
         copying.set(false);
-        worker = new Thread(() -> receive(host, view, frameCallback), "CrewCar-HEVC");
+        worker = new Thread(() -> receive(host, view, frameCallback, token), "CrewCar-HEVC");
         worker.start();
     }
 
-    private void receive(String host, SurfaceView view, Consumer<Bitmap> frameCallback) {
+    private void receive(String host, SurfaceView view, Consumer<Bitmap> frameCallback, long token) {
         MediaCodec decoder = null;
         DatagramSocket dataSocket = null;
         String error = null;
@@ -66,11 +65,7 @@ public final class WltoysVideoStream {
         int decoded = 0;
         long reportAt = SystemClock.elapsedRealtime();
         long nextCopy = 0;
-        byte[] assembled = new byte[0];
-        long currentId = -1;
-        int expected = 0;
-        int collected = 0;
-        boolean[] receivedFragments = new boolean[0];
+        WltoysFrameAssembler assembler = new WltoysFrameAssembler();
 
         try {
             Network wifi = network.wifi();
@@ -96,7 +91,7 @@ public final class WltoysVideoStream {
             byte[] buffer = new byte[2048];
             MediaCodec.BufferInfo outputInfo = new MediaCodec.BufferInfo();
             long ptsUs = 0;
-            while (running) {
+            while (running && token == sessionId) {
                 DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
                 try {
                     dataSocket.receive(packet);
@@ -110,45 +105,9 @@ public final class WltoysVideoStream {
                 }
                 packets++;
                 int len = packet.getLength();
-                if (len < 32) { dropped++; continue; }
-
-                ByteBuffer head = ByteBuffer.wrap(buffer, 0, len).order(ByteOrder.LITTLE_ENDIAN);
-                long magic = head.getInt() & 0xffffffffL;
-                int size = head.getInt();
-                long frameId = head.getInt() & 0xffffffffL;
-                int crc = head.getShort() & 0xffff;
-                int index = head.getShort() & 0xffff;
-                long packetType = head.getInt() & 0xffffffffL;
-                int fragments = head.getShort() & 0xffff;
-                int fragmentIndex = head.getShort() & 0xffff;
-                int offset = head.getInt();
-                int payloadSize = head.getInt();
-
-                if (size <= 0 || size > MAX_FRAME || payloadSize <= 0 ||
-                        payloadSize > len - 32 || offset < 0 ||
-                        ((long) offset + payloadSize) > size ||
-                        fragments <= 0 || fragments > 1024 || fragmentIndex >= fragments) {
-                    dropped++;
-                    continue;
-                }
-
-                if (frameId != currentId) {
-                    // Do not decode incomplete frames, since they corrupt HEVC reference pictures.
-                    if (currentId != -1 && collected < expected) dropped++;
-                    currentId = frameId;
-                    expected = size;
-                    collected = 0;
-                    assembled = new byte[size];
-                    receivedFragments = new boolean[fragments];
-                }
-                if (size != expected || fragmentIndex >= receivedFragments.length ||
-                        receivedFragments[fragmentIndex]) continue;
-
-                receivedFragments[fragmentIndex] = true;
-                System.arraycopy(buffer, 32, assembled, offset, payloadSize);
-                collected += payloadSize;
-
-                if (collected == expected) {
+                byte[] assembled = assembler.accept(buffer, len);
+                if (assembled != null) {
+                    int expected = assembled.length;
                     frames++;
                     int input = decoder.dequeueInputBuffer(10000);
                     if (input >= 0) {
@@ -171,12 +130,10 @@ public final class WltoysVideoStream {
                         long now = SystemClock.elapsedRealtime();
                         if (now >= nextCopy && copying.compareAndSet(false, true)) {
                             nextCopy = now + 1000;
-                            capture(view, frameCallback);
+                            capture(view, frameCallback, token);
                         }
                     }
-                    currentId = -1;
-                    collected = 0;
-                }
+                 }
 
                 if (SystemClock.elapsedRealtime() - reportAt >= 5000) {
                     log.i("HEVC", "rx packets=" + packets + " frames=" + frames +
@@ -190,14 +147,16 @@ public final class WltoysVideoStream {
                 log.e("HEVC", "decoder/UDP failed class=" + error);
             }
         } finally {
-            running = false;
+            if (token == sessionId) running = false;
             if (dataSocket != null) dataSocket.close();
-            listening = null;
-            try {
-                network.send(host, WltoysProtocol.CAMERA_COMMAND_PORT, false,
-                        CommandCodec.encode(WltoysProtocol.CAMERA_STOP_HEX, true));
-                log.i("HEVC", "camera STOP sent");
-            } catch (Exception e) { log.e("HEVC", "camera STOP failed " + e.getClass().getSimpleName()); }
+            if (listening == dataSocket) listening = null;
+            if (token == sessionId) {
+                try {
+                    network.send(host, WltoysProtocol.CAMERA_COMMAND_PORT, false,
+                            CommandCodec.encode(WltoysProtocol.CAMERA_STOP_HEX, true));
+                    log.i("HEVC", "camera STOP sent");
+                } catch (Exception e) { log.e("HEVC", "camera STOP failed " + e.getClass().getSimpleName()); }
+            } else log.i("HEVC", "session superseded; old STOP suppressed");
             if (decoder != null) {
                 try { decoder.stop(); } catch (Exception ignored) {}
                 decoder.release();
@@ -208,9 +167,9 @@ public final class WltoysVideoStream {
     }
 
     /** PixelCopy obtains a real rendered frame, not a stale encoded-buffer placeholder. */
-    private void capture(SurfaceView view, Consumer<Bitmap> callback) {
+    private void capture(SurfaceView view, Consumer<Bitmap> callback, long token) {
         main.post(() -> {
-            if (!running || view.getWidth() <= 0 || view.getHeight() <= 0 ||
+            if (!running || token != sessionId || view.getWidth() <= 0 || view.getHeight() <= 0 ||
                     !view.getHolder().getSurface().isValid()) {
                 copying.set(false);
                 return;
@@ -221,7 +180,7 @@ public final class WltoysVideoStream {
             try {
                 PixelCopy.request(view, bitmap, result -> {
                     copying.set(false);
-                    if (running && result == PixelCopy.SUCCESS) callback.accept(bitmap);
+                    if (running && token == sessionId && result == PixelCopy.SUCCESS) callback.accept(bitmap);
                     else bitmap.recycle();
                 }, main);
             } catch (Exception e) {
@@ -237,7 +196,15 @@ public final class WltoysVideoStream {
         DatagramSocket s = listening;
         if (s != null) s.close();
         Thread t = worker;
-        if (t != null) t.interrupt();
+        if (t != null) {
+            t.interrupt();
+            if (t != Thread.currentThread()) {
+                try { t.join(350); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            }
+        }
+        // After the old worker has had a chance to issue camera STOP,
+        // invalidate late callbacks from the old session.
+        ++sessionId;
         worker = null;
     }
 }
