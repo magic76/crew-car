@@ -84,3 +84,11 @@ Open source reverse-engineering reference: https://github.com/lcgamboa/WL-Tech-F
 - **6401 camera**: documented RTSP `rtsp://172.16.11.1/live/ch00_1` (NOT the same camera format). No 6401 RTSP player has been implemented in Crew Car yet.
 
 After an APK build, identify the vehicle model number/firmware **before using this profile**. Keep all movement disarmed until both physical manual STOP and fresh video are confirmed. If the vehicle does not use this firmware, fall back to manual packet capture; do not blindly transmit the discovered commands.
+
+## Gemini Live Tool smoke test (possible without the car)
+
+After building/installing, connect to normal Internet Wi-Fi or cellular, enter Gemini Key, connect Live, tap **測試 AI 查詢工具（不移動）**. Observe Logcat `TOOL name=get_car_status`, `get_camera_status`, `get_network_status` and `toolResponse count=...`. The model may choose which functions to call; verify that it does not invent unavailable data. Without a real car, camera freshness must be false and the safety lock must be on. Do NOT arm the car just to test read-only tools.
+
+Then explicitly ask to move while locked and verify response status **blocked** with no motor TX. Test `stop_car` and `lock_car` without physically moving the car, understanding that STOP TX may fail without a configured car.
+
+Once a compatible real car is available, re-run after verifying actual STOP, the camera, and the dual-network path. See `docs/GEMINI_TOOLS.md`.

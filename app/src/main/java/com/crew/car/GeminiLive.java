@@ -197,6 +197,15 @@ public final class GeminiLive {
     private void handleTools(WebSocket ws, JSONArray calls) {
         if (calls == null || ws != socket) return;
         JSONArray responses = new JSONArray();
+        boolean safetyOverride = false;
+        for (int i = 0; i < calls.length(); i++) {
+            JSONObject item = calls.optJSONObject(i);
+            if (item != null && ("stop_car".equals(item.optString("name")) ||
+                    "lock_car".equals(item.optString("name")))) {
+                safetyOverride = true;
+                break;
+            }
+        }
         for (int i = 0; i < calls.length(); i++) {
             JSONObject call = calls.optJSONObject(i);
             if (call == null) continue;
@@ -214,7 +223,11 @@ public final class GeminiLive {
                 if (response == null) {
                     JSONObject result;
                     try {
-                        result = executeTool(name, call.optJSONObject("args"));
+                        if (safetyOverride && "drive_car".equals(name)) {
+                            result = toolStatus("blocked", "STOP/lock in same tool batch takes priority");
+                        } else {
+                            result = executeTool(name, call.optJSONObject("args"));
+                        }
                     } catch (Exception e) {
                         result = toolStatus("blocked", "tool_exception_" + e.getClass().getSimpleName());
                         log.e("TOOL", "execution failed tool=" + name + " class=" + e.getClass().getSimpleName());

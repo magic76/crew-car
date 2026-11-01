@@ -48,3 +48,11 @@ Research reference: https://github.com/lcgamboa/WL-Tech-FPV-CAR-6405 — the con
 The UI now includes an **explicit, non-default** WLtoys 6405/6401 motor profile and a **candidate** 6405 UDP/H.265 video adapter using Android MediaCodec + PixelCopy. Do not infer vehicle compatibility from the app name alone; only arm with the car's wheels suspended and a reachable power switch. The 100ms periodic neutral-control keepalive mirrors the reference implementation.
 
 The camera implementation and Gemini 3.8 Live network/API integration have not been compiled or tested on the owner's device. Follow `docs/ADB_HANDOFF.md` before declaring hardware success.
+
+## Gemini Live car tools
+
+Live declares six real Android-side functions: `drive_car`, `stop_car`, `lock_car`, `get_car_status`, `get_camera_status`, and `get_network_status`.
+
+Status and connection tools report **app-level observations only**, not physical car telemetry. AI motor commands are validated (100–650 ms), blocked without manual arming / fresh image / car Wi-Fi, guarded against duplicate tool IDs and invalidated after E-STOP. A batch containing STOP or lock blocks any motor move in the same batch. Only the human can unlock the car through the UI.
+
+A read-only tool smoke-test button has been added. Without the car, connect Live over cellular or normal validated Wi-Fi, and test status/camera/network tools while locked. See [docs/GEMINI_TOOLS.md](docs/GEMINI_TOOLS.md).

@@ -430,10 +430,14 @@ public final class MainActivity extends Activity {
             @Override public JSONObject onNetworkStatus() {
                 android.net.Network car = routes.wifi();
                 return toolJson(
-                        "car_wifi_connected", car != null,
-                        "separate_validated_internet_available", routes.internet(car) != null,
+                        "wifi_transport_present", car != null,
+                        "wifi_has_validated_internet", routes.isValidatedInternet(car),
+                        "usable_gemini_internet_available", routes.internet(car) != null,
+                        "internet_separate_from_wifi", routes.internet(car) != null &&
+                                !routes.internet(car).equals(car),
+                        "wifi_confirmed_as_car", false,
                         "gemini_live_connected", gemini.ready(),
-                        "note", "No claim is made about packet delivery or camera firmware compatibility");
+                        "note", "Wi-Fi presence does not prove the connected SSID belongs to the car; no claim about packet delivery");
             }
             @Override public String onDrive(String direction, int duration) {
                 if ("stop".equalsIgnoreCase(direction)) {
