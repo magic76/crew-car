@@ -71,3 +71,11 @@ The physical car has **only a camera**, besides Wi-Fi control of its motors. No 
 - Diagnostic data remains observational, not vehicle ACK or obstacle detection. No camera image protocol is claimed verified just because the UI resumes reliably.
 
 See [docs/DRIVER_CONSOLE_QA.md](docs/DRIVER_CONSOLE_QA.md) for acceptance cases and follow-up camera diagnosis.
+
+## v0.1.4: low-resource car tuning
+
+**進階設定／診斷 → 操控調校** now has four presets plus limited 40–100ms TX cadence, 50–100% steering and 50–100% throttle amplitude sliders. Default remains the observed OEM 50ms, 100% / 100%. Applying settings stops/disarms the car and requires manual re-arm.
+
+Periodic command pacing is fixed-delay to avoid catch-up bursts on slow devices. Identical manual commands only extend the local watchdog deadline; the periodic sender is the single source of repeated WL packets. TX logging is throttled to avoid heavy UI snapshots. Live local send gap, max gap, send cost, total TX and failures are shown without pretending they measure car acknowledgement or true motion latency. The AI tool status can also inspect the selected tuning and local TX counters.
+
+[Read the control tuning A/B test guide](docs/CONTROL_TUNING.md).
