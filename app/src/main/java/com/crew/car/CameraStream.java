@@ -41,6 +41,7 @@ public final class CameraStream {
     private void capture(String source, Consumer<Bitmap> onFrame) {
         int count = 0;
         long lastLog = 0;
+        long lastDecode = 0;
         try {
             HttpURLConnection conn = (HttpURLConnection) network.carConnection(new URL(source));
             connection = conn;
@@ -75,6 +76,14 @@ public final class CameraStream {
                             frame.reset();
                             log.e("CAM", "JPEG > 2MB, discard and resync");
                         } else if (prev == 0xff && next == 0xd9) {
+                            long decodeAt = android.os.SystemClock.elapsedRealtime();
+                            if (decodeAt - lastDecode < 95) {
+                                inJpeg = false;
+                                frame.reset();
+                                prev = next;
+                                continue;
+                            }
+                            lastDecode = decodeAt;
                             byte[] bytes = frame.toByteArray();
                             Bitmap bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
                             if (bitmap != null) {

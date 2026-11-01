@@ -40,8 +40,16 @@ public final class CarControl {
 
     public synchronized void configure(Config next) {
         armed = false;
-        emergencyStop();
+        manual = false;
+        deadline = 0;
+        active = "stop";
+        Config previous = config;
         config = next;
+        io.execute(() -> {
+            // Reconfiguration cannot redirect the old hardware STOP to the new IP/port.
+            sendInternal("stop", previous);
+            log.i("SAFETY", "STOP previous endpoint on reconfigure");
+        });
         log.i("CTRL", "config host=" + next.host + ":" + next.port +
                 " transport=" + (next.tcp ? "TCP" : "UDP") + " payload=" + (next.hex ? "HEX" : "TEXT"));
     }
@@ -101,8 +109,11 @@ public final class CarControl {
     }
 
     private void sendInternal(String direction) {
+        sendInternal(direction, config);
+    }
+
+    private void sendInternal(String direction, Config c) {
         try {
-            Config c = config;
             byte[] bytes = CommandCodec.encode(c.payloads.get(direction), c.hex);
             network.send(c.host, c.port, c.tcp, bytes);
             log.i("TX", direction + " bytes=" + bytes.length + " hex=" + CommandCodec.hex(bytes) +

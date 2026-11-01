@@ -87,15 +87,20 @@ public final class GeminiLive {
                 receive(ws, text);
             }
             @Override public void onFailure(WebSocket ws, Throwable t, Response response) {
+                if (ws != socket) return;
                 ready = false;
-                micRunning = false;
+                stopMic();
+                speaker.close();
                 // Do NOT log Throwable.getMessage: transport errors may contain auth URL.
                 log.e("LIVE", "WS failed class=" + t.getClass().getSimpleName() +
                         " http=" + (response == null ? "none" : response.code()));
                 if (listener != null) listener.onStatus("Gemini 連線失敗（查看 LIVE Log；確認 API 可使用此模型）");
             }
             @Override public void onClosed(WebSocket ws, int code, String reason) {
+                if (ws != socket) return;
                 ready = false;
+                stopMic();
+                speaker.close();
                 log.i("LIVE", "WS closed code=" + code);
                 if (listener != null) listener.onStatus("Gemini 已中斷 code=" + code);
             }
