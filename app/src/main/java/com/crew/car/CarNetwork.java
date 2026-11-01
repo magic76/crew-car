@@ -18,6 +18,11 @@ import java.net.URLConnection;
 public final class CarNetwork {
     private final ConnectivityManager cm;
     private final CarLog log;
+    private DatagramSocket controlSocket;
+    private Network controlNetwork;
+    private String controlHost;
+    private int controlPort;
+    private InetAddress controlDestination;
     public CarNetwork(Context ctx, CarLog log) {
         cm = (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
         this.log = log;
@@ -86,6 +91,61 @@ public final class CarNetwork {
                 socket.send(new DatagramPacket(payload, payload.length, dest, port));
             }
         }
+    }
+
+    /**
+     * Persistent UDP socket for the 50 ms motor control loop.
+     * Unlike camera-start packets, control traffic keeps one bound source port.
+     * A changed Wi-Fi Network or endpoint forces a fresh socket; TX is still not an ACK.
+     */
+    public synchronized void sendControl(String host, int port, boolean tcp, byte[] payload)
+            throws Exception {
+        if (tcp) {
+            closeControlChannel();
+            send(host, port, true, payload);
+            return;
+        }
+        Network wifi = wifi();
+        if (wifi == null) {
+            closeControlChannel();
+            throw new IllegalStateException("Car Wi-Fi disconnected");
+        }
+        if (host == null || host.isBlank() || port < 1 || port > 65535)
+            throw new IllegalArgumentException("Invalid car endpoint");
+        if (controlSocket == null || controlSocket.isClosed() ||
+                !wifi.equals(controlNetwork) || !host.equals(controlHost) || port != controlPort) {
+            closeControlChannel();
+            DatagramSocket socket = new DatagramSocket();
+            try {
+                wifi.bindSocket(socket);
+                InetAddress destination = wifi.getAllByName(host)[0];
+                controlSocket = socket;
+                controlNetwork = wifi;
+                controlHost = host;
+                controlPort = port;
+                controlDestination = destination;
+                log.i("NET", "UDP control socket bound network=" + wifi +
+                        " destination=" + host + ":" + port + " sourcePort=" + socket.getLocalPort());
+            } catch (Exception e) {
+                socket.close();
+                throw e;
+            }
+        }
+        try {
+            controlSocket.send(new DatagramPacket(payload, payload.length, controlDestination, controlPort));
+        } catch (Exception e) {
+            closeControlChannel();
+            throw e;
+        }
+    }
+
+    public synchronized void closeControlChannel() {
+        if (controlSocket != null) controlSocket.close();
+        controlSocket = null;
+        controlNetwork = null;
+        controlHost = null;
+        controlPort = 0;
+        controlDestination = null;
     }
 
     public void diagnostics() {
