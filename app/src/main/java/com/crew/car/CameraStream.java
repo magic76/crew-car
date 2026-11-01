@@ -27,6 +27,8 @@ public final class CameraStream {
         this.log = log;
     }
 
+    public boolean isRunning() { return running; }
+
     public synchronized void start(String source, Consumer<Bitmap> onFrame) {
         stop();
         if (source == null || !(source.startsWith("http://") || source.startsWith("https://"))) {
