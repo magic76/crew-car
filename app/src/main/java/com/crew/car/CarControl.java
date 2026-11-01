@@ -178,9 +178,10 @@ public final class CarControl {
             io.execute(() -> {
                 if (!armed || motionEpoch.get() != epoch || (fromAi && manual)) return;
                 deadline = SystemClock.elapsedRealtime() + ms;
-                if (!command.equals(active)) {
+                if (!command.equals(active) || !config.wltoys) {
                     active = command;
-                    sendInternal(command); // immediate on direction change; ticker handles repeats
+                    // Custom profiles may require repeated pulses; WL profiles use periodic TX.
+                    sendInternal(command);
                 }
             });
             return "queued " + command + " " + ms + "ms (unacknowledged)";
