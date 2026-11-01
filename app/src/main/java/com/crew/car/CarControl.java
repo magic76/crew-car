@@ -14,6 +14,8 @@ public final class CarControl {
         public int port;
         public boolean tcp;
         public boolean hex;
+        /** Open-source candidate firmware profile; user must still explicitly arm. */
+        public boolean wltoys;
         public final Map<String, String> payloads = new HashMap<>();
     }
     private final CarNetwork network;
@@ -29,8 +31,16 @@ public final class CarControl {
         this.network = network;
         this.log = log;
         io.scheduleAtFixedRate(() -> {
+            if (armed && network.wifi() == null) {
+                log.e("SAFETY", "Wi-Fi lost; disarming");
+                disarm();
+                return;
+            }
             if (!"stop".equals(active) && SystemClock.elapsedRealtime() > deadline) {
                 stopInternal("watchdog");
+            } else if (armed && config.wltoys) {
+                // Original 6405 protocol emits a new 16-byte state packet every ~100 ms.
+                sendInternal(active);
             }
         }, 100, 100, TimeUnit.MILLISECONDS);
     }
@@ -51,7 +61,8 @@ public final class CarControl {
             log.i("SAFETY", "STOP previous endpoint on reconfigure");
         });
         log.i("CTRL", "config host=" + next.host + ":" + next.port +
-                " transport=" + (next.tcp ? "TCP" : "UDP") + " payload=" + (next.hex ? "HEX" : "TEXT"));
+                " transport=" + (next.tcp ? "TCP" : "UDP") + " payload=" + (next.hex ? "HEX" : "TEXT") +
+                " wltoysCandidate=" + next.wltoys);
     }
 
     public synchronized String arm() {
@@ -59,8 +70,14 @@ public final class CarControl {
         if (config.host == null || config.host.isBlank() || config.port < 1 || config.port > 65535)
             return "請設定控制 IP / Port";
         try {
-            for (String d : new String[]{"forward","backward","left","right","stop"})
-                CommandCodec.encode(config.payloads.get(d), config.hex);
+            if (config.wltoys) {
+                if (config.tcp || config.port != WltoysProtocol.CONTROL_PORT)
+                    return "WLtoys profile requires UDP port 23458";
+                WltoysProtocol.control("stop");
+            } else {
+                for (String d : new String[]{"forward","backward","left","right","stop"})
+                    CommandCodec.encode(config.payloads.get(d), config.hex);
+            }
         } catch (IllegalArgumentException e) { return e.getMessage(); }
         armed = true;
         log.i("SAFETY", "控制已解鎖；封包格式尚需實機驗證");
@@ -114,7 +131,8 @@ public final class CarControl {
 
     private void sendInternal(String direction, Config c) {
         try {
-            byte[] bytes = CommandCodec.encode(c.payloads.get(direction), c.hex);
+            byte[] bytes = c.wltoys ? WltoysProtocol.control(direction) :
+                    CommandCodec.encode(c.payloads.get(direction), c.hex);
             network.send(c.host, c.port, c.tcp, bytes);
             log.i("TX", direction + " bytes=" + bytes.length + " hex=" + CommandCodec.hex(bytes) +
                     " (TX only; no device ACK)");

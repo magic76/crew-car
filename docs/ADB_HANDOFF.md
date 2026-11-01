@@ -72,3 +72,15 @@ Recommended measurement sequence:
 ## Reports
 
 Keep `crew-car-adb.log`, a short chronological test report, exact model/firmware, and non-sensitive packet hex in a new `docs/HARDWARE_VERIFIED.md`. Do not store API Keys, microphone recordings, private camera clips or capture files in Git.
+
+## Newly discovered source protocol (2026-11-01)
+
+Open source reverse-engineering reference: https://github.com/lcgamboa/WL-Tech-FPV-CAR-6405
+
+- **6405 control**: UDP to `172.16.11.1:23458`, every ~100ms, 16-byte payload `CA 47 D5 00 00 00 00 00 66 <steer> <throttle> <trim> 00 00 <steer XOR throttle XOR trim> 99`.
+- Neutral values: steer=0x80, throttle=0x80, trim=0x80; reference manual steering delta=45, throttle delta=30. The neutral packet is `CA47D500000000006680808000008099`.
+- **6405 camera start**: UDP to port `23459`: `A88A200008000000010002000000D204`. Stop: `A88A210006000000010000000000`.
+- **6405 video receive**: UDP port `1234`, fragmented H.265; 32-byte little-endian header includes `total_size`, `frame_id`, `frag_index`, `offset`, and `payload_size`. Experimental native Android MediaCodec receiver has been added. A successful frame is only reported when PixelCopy succeeds.
+- **6401 camera**: documented RTSP `rtsp://172.16.11.1/live/ch00_1` (NOT the same camera format). No 6401 RTSP player has been implemented in Crew Car yet.
+
+After an APK build, identify the vehicle model number/firmware **before using this profile**. Keep all movement disarmed until both physical manual STOP and fresh video are confirmed. If the vehicle does not use this firmware, fall back to manual packet capture; do not blindly transmit the discovered commands.
