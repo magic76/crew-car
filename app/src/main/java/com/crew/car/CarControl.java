@@ -6,12 +6,13 @@ import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicLong;
 
 /** Sole serial writer to the car. An explicit STOP packet is sent when movement times out. */
 public final class CarControl {
-    /** OEM app log showed 16-byte control sends at roughly 50 ms intervals. */
-    private static final long CONTROL_PERIOD_MS = 50;
+    /** Watchdog checks stay responsive even with a slower user-selected transmit cadence. */
+    private static final long WATCHDOG_PERIOD_MS = 25;
 
     public static final class Config {
         public String host;
@@ -20,6 +21,7 @@ public final class CarControl {
         public boolean hex;
         /** Open-source candidate firmware profile; user must still explicitly arm. */
         public boolean wltoys;
+        public CarTuning tuning = CarTuning.OEM;
         public final Map<String, String> payloads = new HashMap<>();
     }
     private final CarNetwork network;
@@ -35,6 +37,14 @@ public final class CarControl {
     private volatile String lastTxStatus = "not_sent";
     private volatile long lastTxAt;
     private volatile long lastStopLogAt;
+    private ScheduledFuture<?> transmitTicker;
+    private volatile long txPackets;
+    private volatile long txFailures;
+    private volatile long lastTxGapMs = -1;
+    private volatile long maxTxGapMs;
+    private volatile long lastSendDurationMs;
+    private long lastDetailedTxLogAt;
+    private String lastLoggedDirection = "";
 
     public CarControl(CarNetwork network, CarLog log) {
         this.network = network;
@@ -45,13 +55,27 @@ public final class CarControl {
                 disarm();
                 return;
             }
-            if (!"stop".equals(active) && SystemClock.elapsedRealtime() > deadline) {
+            if (!"stop".equals(active) && SystemClock.elapsedRealtime() > deadline)
                 stopInternal("watchdog");
-            } else if (armed && config.wltoys) {
-                // Match the ~50 ms send cadence observed in the owner's OEM app log.
-                sendInternal(active);
-            }
-        }, CONTROL_PERIOD_MS, CONTROL_PERIOD_MS, TimeUnit.MILLISECONDS);
+        }, WATCHDOG_PERIOD_MS, WATCHDOG_PERIOD_MS, TimeUnit.MILLISECONDS);
+        transmitTicker = scheduleTransmitter(CarTuning.OEM);
+    }
+
+    private ScheduledFuture<?> scheduleTransmitter(CarTuning tuning) {
+        return io.scheduleAtFixedRate(() -> {
+            if (armed && config.wltoys) sendInternal(active);
+        }, tuning.intervalMs, tuning.intervalMs, TimeUnit.MILLISECONDS);
+    }
+
+    private void resetMetrics() {
+        lastTxAt = 0;
+        lastTxGapMs = -1;
+        maxTxGapMs = 0;
+        lastSendDurationMs = 0;
+        lastDetailedTxLogAt = 0;
+        lastLoggedDirection = "";
+        txPackets = 0;
+        txFailures = 0;
     }
     public boolean armed() { return armed; }
     public boolean manual() { return manual; }
@@ -62,8 +86,23 @@ public final class CarControl {
     public String lastTxStatus() { return lastTxStatus; }
     public long lastTxAgeMs() { return lastTxAt == 0 ? -1 : Math.max(0, SystemClock.elapsedRealtime() - lastTxAt); }
     public boolean candidateProtocol() { return config.wltoys; }
+    public CarTuning tuning() { return config.tuning; }
+    public long txPackets() { return txPackets; }
+    public long txFailures() { return txFailures; }
+    public long lastTxGapMs() { return lastTxGapMs; }
+    public long maxTxGapMs() { return maxTxGapMs; }
+    public long lastSendDurationMs() { return lastSendDurationMs; }
+    public String diagnosticSummary() {
+        return "設定週期 " + config.tuning.intervalMs + "ms | 本機傳送 " + txPackets +
+                " | 失敗 " + txFailures + " | 上次間隔 " +
+                (lastTxGapMs < 0 ? "—" : lastTxGapMs + "ms") +
+                " | 最長間隔 " + maxTxGapMs + "ms | 最後送出耗時 " +
+                lastSendDurationMs + "ms（不是車端回應時間）";
+    }
 
     public synchronized void configure(Config next) {
+        if (next == null || next.tuning == null)
+            throw new IllegalArgumentException("missing control tuning");
         motionEpoch.incrementAndGet();
         boolean stopPrevious = armed || !"stop".equals(active);
         armed = false;
@@ -72,14 +111,17 @@ public final class CarControl {
         active = "stop";
         Config previous = config;
         config = next;
-        if (stopPrevious && hasStopPayload(previous)) {
-            io.execute(() -> {
-                // Reconfiguration cannot redirect the old hardware STOP to the new IP/port.
+        io.execute(() -> {
+            if (stopPrevious && hasStopPayload(previous)) {
                 sendInternal("stop", previous);
                 log.i("SAFETY", "STOP previous endpoint on reconfigure");
-            });
-        }
-        log.i("CTRL", "config host=" + next.host + ":" + next.port +
+            }
+            if (transmitTicker != null) transmitTicker.cancel(false);
+            resetMetrics();
+            transmitTicker = scheduleTransmitter(next.tuning);
+        });
+        log.i("CTRL", "tuning=" + next.tuning +
+                " config host=" + next.host + ":" + next.port +
                 " transport=" + (next.tcp ? "TCP" : "UDP") + " payload=" + (next.hex ? "HEX" : "TEXT") +
                 " wltoysCandidate=" + next.wltoys);
     }
@@ -99,7 +141,7 @@ public final class CarControl {
             }
         } catch (IllegalArgumentException e) { return e.getMessage(); }
         armed = true;
-        log.i("SAFETY", "控制已解鎖；封包格式尚需實機驗證");
+        log.i("SAFETY", "控制已解鎖；" + config.tuning + "；仍需實車確認");
         return null;
     }
 
@@ -135,9 +177,11 @@ public final class CarControl {
             final long epoch = motionEpoch.get();
             io.execute(() -> {
                 if (!armed || motionEpoch.get() != epoch || (fromAi && manual)) return;
-                active = command;
                 deadline = SystemClock.elapsedRealtime() + ms;
-                sendInternal(command);
+                if (!command.equals(active)) {
+                    active = command;
+                    sendInternal(command); // immediate on direction change; ticker handles repeats
+                }
             });
             return "queued " + command + " " + ms + "ms (unacknowledged)";
         } catch (Exception e) {
@@ -165,9 +209,11 @@ public final class CarControl {
         final long epoch = motionEpoch.get();
         io.execute(() -> {
             if (!armed || motionEpoch.get() != epoch || !manual) return;
-            active = command;
             deadline = SystemClock.elapsedRealtime() + 500;
-            sendInternal(command);
+            if (!command.equals(active)) {
+                active = command;
+                sendInternal(command); // do not duplicate TX on each 180ms UI renewal
+            }
         });
         return "queued axes " + steer + "," + throttle + " (unacknowledged)";
     }
@@ -201,25 +247,46 @@ public final class CarControl {
             if (c.wltoys && direction.startsWith("axes:")) {
                 String[] axes = direction.split(":");
                 if (axes.length != 3) throw new IllegalArgumentException("bad axis command");
-                bytes = WltoysProtocol.control(Integer.parseInt(axes[1]), Integer.parseInt(axes[2]));
+                bytes = WltoysProtocol.control(Integer.parseInt(axes[1]), Integer.parseInt(axes[2]), c.tuning);
             } else if (c.wltoys) {
-                bytes = WltoysProtocol.control(direction);
+                switch (direction) {
+                    case "forward": bytes = WltoysProtocol.control(0, 1, c.tuning); break;
+                    case "backward": bytes = WltoysProtocol.control(0, -1, c.tuning); break;
+                    case "left": bytes = WltoysProtocol.control(-1, 0, c.tuning); break;
+                    case "right": bytes = WltoysProtocol.control(1, 0, c.tuning); break;
+                    case "stop": bytes = WltoysProtocol.control(0, 0, c.tuning); break;
+                    default: throw new IllegalArgumentException("invalid direction");
+                }
             } else {
                 bytes = CommandCodec.encode(c.payloads.get(direction), c.hex);
             }
+            long started = SystemClock.elapsedRealtime();
             network.sendControl(c.host, c.port, c.tcp, bytes);
+            long finished = SystemClock.elapsedRealtime();
+            lastSendDurationMs = finished - started;
+            if (lastTxAt > 0 && finished >= lastTxAt) {
+                long gap = finished - lastTxAt;
+                if (gap <= 5000) {
+                    lastTxGapMs = gap;
+                    maxTxGapMs = Math.max(maxTxGapMs, gap);
+                }
+            }
             lastTxCommand = direction;
             lastTxStatus = "sent_without_hardware_ack";
-            lastTxAt = SystemClock.elapsedRealtime();
-            // Avoid flooding on-screen logs with 10 neutral heartbeats/sec.
-            if (!"stop".equals(direction) || lastTxAt - lastStopLogAt >= 2000) {
-                log.i("TX", direction + " target=" + c.host + ":" + c.port +
-                        " transport=" + (c.tcp ? "TCP" : "UDP") +
-                        " bytes=" + bytes.length + " hex=" + CommandCodec.hex(bytes) +
-                        " (TX only; no device ACK)");
-                if ("stop".equals(direction)) lastStopLogAt = lastTxAt;
+            lastTxAt = finished;
+            txPackets++;
+            boolean directionChanged = !direction.equals(lastLoggedDirection);
+            if (directionChanged || finished - lastDetailedTxLogAt >= 2500) {
+                log.i("TX", direction + " bytes=" + bytes.length +
+                        " config=" + c.tuning + " hex=" + CommandCodec.hex(bytes) +
+                        " sent=" + txPackets + " fails=" + txFailures +
+                        " gapMs=" + lastTxGapMs + " localSendMs=" + lastSendDurationMs +
+                        " (no hardware ACK)");
+                lastDetailedTxLogAt = finished;
+                lastLoggedDirection = direction;
             }
         } catch (Exception e) {
+            txFailures++;
             lastTxCommand = direction;
             lastTxStatus = "failed_" + e.getClass().getSimpleName();
             lastTxAt = SystemClock.elapsedRealtime();
@@ -233,7 +300,10 @@ public final class CarControl {
 
     public void shutdown() {
         disarm();
-        io.execute(network::closeControlChannel);
+        io.execute(() -> {
+            if (transmitTicker != null) transmitTicker.cancel(false);
+            network.closeControlChannel();
+        });
         io.shutdown();
     }
 }
