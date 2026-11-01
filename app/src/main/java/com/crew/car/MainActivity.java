@@ -28,6 +28,7 @@ import android.widget.TextView;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import org.json.JSONObject;
 
 public final class MainActivity extends Activity {
     private static final int MIC_PERMISSION_REQUEST = 101;
@@ -47,6 +48,9 @@ public final class MainActivity extends Activity {
     private SurfaceView hevcPreview;
     private CheckBox arm;
     private volatile long lastCameraFrame;
+    private volatile int lastFrameWidth;
+    private volatile int lastFrameHeight;
+    private volatile int currentCameraAdapter;
     private boolean changingConfig;
     private Runnable repeatedMotion;
 
@@ -138,6 +142,7 @@ public final class MainActivity extends Activity {
         cameraAdapter.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item,
                 new String[]{"WLtoys 6405 UDP H.265（候選協定）", "HTTP JPEG/MJPEG（自訂）"}));
         cameraAdapter.setSelection(getPreferences(MODE_PRIVATE).getInt("camera_adapter", 0));
+        currentCameraAdapter = cameraAdapter.getSelectedItemPosition();
         root.addView(cameraAdapter);
         cameraUrl = field(root, "HTTP 模式才需填影像 URL",
                 saved("camera_url", ""), false);
@@ -156,7 +161,10 @@ public final class MainActivity extends Activity {
             @Override public void onItemSelected(android.widget.AdapterView<?> parent, View view, int position, long id) {
                 camera.stop();
                 wltoysVideo.stop();
+                currentCameraAdapter = position;
                 lastCameraFrame = 0;
+                lastFrameWidth = 0;
+                lastFrameHeight = 0;
                 control.disarm();
                 if (arm != null) uncheck();
                 preview.setVisibility(position == 0 ? View.GONE : View.VISIBLE);
@@ -248,6 +256,12 @@ public final class MainActivity extends Activity {
             if (!gemini.sendText(prompt.getText().toString())) log.e("LIVE", "請先連線 Gemini");
             else log.i("LIVE", "text turn sent (content redacted)");
         }), new LinearLayout.LayoutParams(-1, dp(50)));
+        label(root, "Gemini 可使用：drive_car、stop_car、lock_car、get_car_status、get_camera_status、get_network_status。查車況不需要解鎖。", 12);
+        root.addView(button("測試 AI 查詢工具（不移動）", v -> {
+            if (!gemini.sendText("請先呼叫 get_car_status、get_camera_status、get_network_status，然後用繁體中文告訴我連線與安全狀態，不要移動小車。")) {
+                log.e("TOOL", "Live disconnected; cannot request tool smoke test");
+            } else log.i("TOOL", "read-only smoke test requested");
+        }), new LinearLayout.LayoutParams(-1, dp(50)));
         transcript = label(root, "對話顯示區（僅保留最新訊息）", 13);
         transcript.setMinHeight(dp(50));
 
@@ -309,10 +323,15 @@ public final class MainActivity extends Activity {
         getPreferences(MODE_PRIVATE).edit().putString("camera_url", url)
                 .putInt("camera_adapter", cameraAdapter.getSelectedItemPosition()).apply();
         lastCameraFrame = 0;
+        lastFrameWidth = 0;
+        lastFrameHeight = 0;
+        currentCameraAdapter = cameraAdapter.getSelectedItemPosition();
         cameraStatus.setText("影像連線中…");
         if (cameraAdapter.getSelectedItemPosition() == 0) {
             String destination = host.getText().toString().trim();
             wltoysVideo.start(destination, hevcPreview, frame -> {
+                lastFrameWidth = frame.getWidth();
+                lastFrameHeight = frame.getHeight();
                 lastCameraFrame = SystemClock.elapsedRealtime();
                 gemini.frame(frame);
                 if (!isFinishing()) cameraStatus.setText("H.265 解碼影格 " +
@@ -320,6 +339,8 @@ public final class MainActivity extends Activity {
             });
         } else {
             camera.start(url, frame -> {
+                lastFrameWidth = frame.getWidth();
+                lastFrameHeight = frame.getHeight();
                 lastCameraFrame = SystemClock.elapsedRealtime();
                 gemini.frame(frame);
                 runOnUiThread(() -> {
@@ -367,8 +388,56 @@ public final class MainActivity extends Activity {
         key.setText(""); // avoid leaving the secret in the view hierarchy
         gemini.connect(apiKey, routes.internet(routes.wifi()), new GeminiLive.Listener() {
             @Override public void onStatus(String status) {
+                if (status.contains("失敗") || status.contains("中斷")) control.emergencyStop();
                 runOnUiThread(() -> liveStatus.setText(status));
                 log.i("LIVE", "state updated"); // no credentials
+            }
+            @Override public void onStop() {
+                control.emergencyStop();
+                log.i("SAFETY", "AI stop_car requested (hardware acknowledgement unavailable)");
+            }
+            @Override public void onLock() {
+                control.disarm();
+                runOnUiThread(() -> { if (arm != null) uncheck(); });
+                log.i("SAFETY", "AI lock_car requested; manual re-arm required");
+            }
+            @Override public JSONObject onCarStatus() {
+                return toolJson(
+                        "safety_armed", control.armed(),
+                        "manual_override", control.manual(),
+                        "active_command", control.activeCommand(),
+                        "pulse_remaining_ms", control.remainingMs(),
+                        "candidate_wltoys_protocol", control.candidateProtocol(),
+                        "last_tx_direction", control.lastTxCommand(),
+                        "last_tx_status", control.lastTxStatus(),
+                        "last_tx_age_ms", control.lastTxAgeMs(),
+                        "motor_position_known", false,
+                        "device_ack_supported", false,
+                        "camera_fresh", cameraAgeMs() >= 0 && cameraAgeMs() <= 2500);
+            }
+            @Override public JSONObject onCameraStatus() {
+                long age = cameraAgeMs();
+                return toolJson(
+                        "adapter", currentCameraAdapter == 0 ? "WLtoys 6405 UDP HEVC candidate" : "HTTP JPEG/MJPEG",
+                        "frames_received", lastCameraFrame != 0,
+                        "last_frame_age_ms", age,
+                        "fresh", age >= 0 && age <= 2500,
+                        "width", lastFrameWidth,
+                        "height", lastFrameHeight,
+                        "scene_recognition_available_here", false,
+                        "note", "Live receives limited video frames separately; this tool only reports receive health");
+            }
+            @Override public JSONObject onNetworkStatus() {
+                android.net.Network car = routes.wifi();
+                return toolJson(
+                        "wifi_transport_present", car != null,
+                        "wifi_has_validated_internet", routes.isValidatedInternet(car),
+                        "usable_gemini_internet_available", routes.internet(car) != null,
+                        "internet_separate_from_wifi", routes.internet(car) != null &&
+                                !routes.internet(car).equals(car),
+                        "wifi_confirmed_as_car", false,
+                        "gemini_live_connected", gemini.ready(),
+                        "note", "Wi-Fi presence does not prove the connected SSID belongs to the car; no claim about packet delivery");
             }
             @Override public String onDrive(String direction, int duration) {
                 if ("stop".equalsIgnoreCase(direction)) {
@@ -386,6 +455,21 @@ public final class MainActivity extends Activity {
                 log.i("LIVE", "transcript received (content redacted)");
             }
         });
+    }
+
+    private long cameraAgeMs() {
+        long last = lastCameraFrame;
+        return last == 0 ? -1 : Math.max(0, SystemClock.elapsedRealtime() - last);
+    }
+
+    /** The tool schema is structured, stable and avoids exposing any credentials. */
+    private static JSONObject toolJson(Object... pairs) {
+        JSONObject out = new JSONObject();
+        try {
+            for (int i = 0; i + 1 < pairs.length; i += 2)
+                out.put((String) pairs[i], pairs[i + 1]);
+        } catch (Exception ignored) { }
+        return out;
     }
 
     private void startMic() {
@@ -409,7 +493,9 @@ public final class MainActivity extends Activity {
         if (control != null) control.disarm();
         if (arm != null) uncheck();
         if (gemini != null) gemini.stopMic();
+        if (camera != null) camera.stop();
         if (wltoysVideo != null) wltoysVideo.stop();
+        lastCameraFrame = 0;
         if (repeatedMotion != null) main.removeCallbacks(repeatedMotion);
     }
 

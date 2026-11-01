@@ -15,6 +15,8 @@ import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
@@ -33,6 +35,11 @@ public final class GeminiLive {
     public interface Listener {
         void onStatus(String value);
         String onDrive(String direction, int milliseconds);
+        void onStop();
+        void onLock();
+        JSONObject onCarStatus();
+        JSONObject onCameraStatus();
+        JSONObject onNetworkStatus();
         void onTranscript(String text);
     }
     private static final String MODEL = "models/gemini-3.8-live";
@@ -48,6 +55,11 @@ public final class GeminiLive {
     private OkHttpClient client;
     private final Speaker speaker = new Speaker();
     private Listener listener;
+    private final Map<String, JSONObject> recentToolResponses = new LinkedHashMap<String, JSONObject>(64, .75f, true) {
+        @Override protected boolean removeEldestEntry(Map.Entry<String, JSONObject> eldest) {
+            return size() > 64;
+        }
+    };
 
     public GeminiLive(CarLog log) { this.log = log; }
     public boolean ready() { return ready; }
@@ -109,24 +121,13 @@ public final class GeminiLive {
 
     private JSONObject setup() {
         try {
-            JSONObject motion = new JSONObject()
-                    .put("name", "drive_car")
-                    .put("description", "Move a Wi-Fi toy car for one short pulse only. Stop if uncertain. The tool cannot provide obstacle avoidance. Never issue continuous/autonomous motion.")
-                    .put("behavior", "NON_BLOCKING")
-                    .put("parameters", new JSONObject()
-                            .put("type", "OBJECT")
-                            .put("properties", new JSONObject()
-                                    .put("direction", new JSONObject()
-                                            .put("type", "STRING")
-                                            .put("description", "One of forward, backward, left, right, stop"))
-                                    .put("duration_ms", new JSONObject()
-                                            .put("type", "INTEGER")
-                                            .put("description", "100 to 650 milliseconds; only used for motion")))
-                            .put("required", new JSONArray().put("direction")));
             String instruction = "你是 Crew Car 的繁體中文語音助手。你可以看到低頻率車頭影像，也可聽使用者說話。" +
-                    "只有使用者明確要求移動，才使用 drive_car。每次最多短暫移動 650 毫秒；不自行持續前進、追人、追車或規劃自主導航。" +
+                    "可用工具：get_car_status 查安全鎖與最後傳送狀態、get_camera_status 查鏡頭新鮮度、get_network_status 查網路、stop_car 立即送 STOP、lock_car 鎖車、drive_car 短促移動。" +
+                    "先用只讀工具回答車況，不能編造電池量、位置、距離、實際移動、障礙物偵測或感測器資料。" +
+                    "只有使用者明確要求移動，才使用 drive_car，duration_ms 必須在 100–650 毫秒。不得自行連續移動、追人、追車或規劃自主導航。" +
                     "若鏡頭未更新、看不清路況、看見人或障礙物、或指令不明確，請停止並詢問。" +
-                    "控制工具回傳 queued 代表已送出但沒有小車回執，不要宣稱已真正移動。" +
+                    "工具回傳 queued 只代表移動已排入本機佇列；TX 成功也不代表小車回覆或真正移動，絕對不可宣稱完成移動。" +
+                    "stop_car 和 lock_car 可隨時呼叫；只有人類可以在手機介面重新解鎖。" +
                     "同一意圖連續失敗至多嘗試兩次，之後停止並告知使用者。";
             return new JSONObject().put("setup", new JSONObject()
                     .put("model", MODEL)
@@ -137,13 +138,14 @@ public final class GeminiLive {
                     .put("systemInstruction", new JSONObject()
                             .put("parts", new JSONArray().put(new JSONObject().put("text", instruction))))
                     .put("tools", new JSONArray().put(
-                            new JSONObject().put("functionDeclarations", new JSONArray().put(motion)))));
+                            new JSONObject().put("functionDeclarations", GeminiCarTools.declarations()))));
         } catch (Exception e) {
             throw new IllegalStateException("build Live setup", e);
         }
     }
 
     private void receive(WebSocket ws, String text) {
+        if (ws != socket) return; // ignore late packets from an old Gemini session
         try {
             JSONObject m = new JSONObject(text);
             if (m.has("setupComplete")) {
@@ -176,8 +178,8 @@ public final class GeminiLive {
             JSONObject tools = m.optJSONObject("toolCall");
             if (tools != null) handleTools(ws, tools.optJSONArray("functionCalls"));
             if (m.has("toolCallCancellation")) {
-                log.i("LIVE", "toolCallCancellation -> stop");
-                if (listener != null) listener.onDrive("stop", 0);
+                log.i("LIVE", "toolCallCancellation -> emergency stop");
+                if (listener != null) listener.onStop();
             }
             if (m.has("goAway")) log.i("LIVE", "server goAway; session ending");
         } catch (Exception e) {
@@ -191,38 +193,112 @@ public final class GeminiLive {
         }
     }
 
+    /** Tool responses include the server-issued id; duplicate IDs never execute motion twice. */
     private void handleTools(WebSocket ws, JSONArray calls) {
-        if (calls == null) return;
+        if (calls == null || ws != socket) return;
         JSONArray responses = new JSONArray();
+        boolean safetyOverride = false;
+        for (int i = 0; i < calls.length(); i++) {
+            JSONObject item = calls.optJSONObject(i);
+            if (item != null && ("stop_car".equals(item.optString("name")) ||
+                    "lock_car".equals(item.optString("name")))) {
+                safetyOverride = true;
+                break;
+            }
+        }
         for (int i = 0; i < calls.length(); i++) {
             JSONObject call = calls.optJSONObject(i);
             if (call == null) continue;
-            String name = call.optString("name");
-            JSONObject args = call.optJSONObject("args");
-            String result = "blocked: unknown function";
-            if ("drive_car".equals(name) && listener != null) {
-                String direction = args == null ? "" : args.optString("direction");
-                int duration = args == null ? 300 : args.optInt("duration_ms", 300);
-                result = listener.onDrive(direction, duration);
-                log.i("TOOL", "drive_car dir=" + direction + " duration=" + duration + " result=" + result);
+            String name = call.optString("name", "");
+            String id = call.optString("id", "");
+            long started = SystemClock.elapsedRealtime();
+            JSONObject response = null;
+            if (!id.isEmpty()) {
+                synchronized (recentToolResponses) {
+                    response = recentToolResponses.get(id);
+                }
             }
+            boolean replay = response != null;
             try {
-                JSONObject item = new JSONObject()
-                        .put("name", name)
-                        .put("response", new JSONObject()
-                                .put("status", result.startsWith("blocked") ? "blocked" : "ok")
-                                .put("retryable", false)
-                                .put("message", result));
-                if (call.has("id")) item.put("id", call.getString("id"));
-                responses.put(item);
-            } catch (Exception ignored) { }
+                if (response == null) {
+                    JSONObject result;
+                    try {
+                        if (safetyOverride && "drive_car".equals(name)) {
+                            result = toolStatus("blocked", "STOP/lock in same tool batch takes priority");
+                        } else {
+                            result = executeTool(name, call.optJSONObject("args"));
+                        }
+                    } catch (Exception e) {
+                        result = toolStatus("blocked", "tool_exception_" + e.getClass().getSimpleName());
+                        log.e("TOOL", "execution failed tool=" + name + " class=" + e.getClass().getSimpleName());
+                    }
+                    response = new JSONObject().put("name", name).put("response", result);
+                    if (!id.isEmpty()) {
+                        response.put("id", id);
+                        synchronized (recentToolResponses) { recentToolResponses.put(id, response); }
+                    }
+                }
+                responses.put(response);
+                JSONObject result = response.optJSONObject("response");
+                String state = result == null ? "invalid" : result.optString("status", "unknown");
+                log.i("TOOL", "name=" + name + " status=" + state +
+                        " replay=" + replay + " durationMs=" + (SystemClock.elapsedRealtime() - started) +
+                        " idSuffix=" + (id.length() > 8 ? id.substring(id.length() - 8) : id));
+            } catch (Exception e) {
+                log.e("TOOL", "cannot serialize response name=" + name +
+                        " class=" + e.getClass().getSimpleName());
+            }
         }
-        if (responses.length() > 0) {
+        if (responses.length() > 0 && ws == socket) {
             try {
-                ws.send(new JSONObject().put("toolResponse",
+                boolean sent = ws.send(new JSONObject().put("toolResponse",
                         new JSONObject().put("functionResponses", responses)).toString());
-                log.i("TOOL", "response count=" + responses.length());
-            } catch (Exception e) { log.e("TOOL", "response failed"); }
+                log.i("TOOL", "toolResponse count=" + responses.length() + " sent=" + sent);
+            } catch (Exception e) {
+                log.e("TOOL", "toolResponse failed class=" + e.getClass().getSimpleName());
+            }
+        }
+    }
+
+    private static JSONObject toolStatus(String status, String message) throws org.json.JSONException {
+        return new JSONObject().put("status", status)
+                .put("message", message).put("retryable", false);
+    }
+
+    private JSONObject executeTool(String name, JSONObject args) throws org.json.JSONException {
+        if (listener == null) return toolStatus("blocked", "no active car session");
+        if (!CarToolPolicy.isSupported(name))
+            return toolStatus("blocked", "unknown tool; not supported");
+        switch (name) {
+            case "drive_car": {
+                String direction = args == null ? "" : args.optString("direction", "");
+                int duration = args == null ? -1 : args.optInt("duration_ms", -1);
+                String violation = CarToolPolicy.validateMove(direction, duration);
+                if (violation != null) return toolStatus("blocked", violation);
+                String result = listener.onDrive(direction, duration);
+                boolean blocked = result == null || result.startsWith("blocked");
+                return toolStatus(blocked ? "blocked" : "queued", result == null ? "no result" : result)
+                        .put("device_acknowledged", false)
+                        .put("motion_verified", false);
+            }
+            case "stop_car":
+                listener.onStop();
+                return toolStatus("requested", "STOP packet queued. No hardware acknowledgement.")
+                        .put("device_acknowledged", false);
+            case "lock_car":
+                listener.onLock();
+                return toolStatus("requested", "motor locked and STOP queued; only human can unlock");
+            case "get_car_status":
+                return toolStatus("ok", "application state, NOT hardware telemetry")
+                        .put("data", listener.onCarStatus());
+            case "get_camera_status":
+                return toolStatus("ok", "camera freshness metadata, NOT scene understanding")
+                        .put("data", listener.onCameraStatus());
+            case "get_network_status":
+                return toolStatus("ok", "Android network route availability")
+                        .put("data", listener.onNetworkStatus());
+            default:
+                return toolStatus("blocked", "unknown tool");
         }
     }
 
@@ -310,6 +386,7 @@ public final class GeminiLive {
     }
 
     public synchronized void disconnect() {
+        synchronized (recentToolResponses) { recentToolResponses.clear(); }
         stopMic();
         ready = false;
         if (socket != null) socket.close(1000, "user close");

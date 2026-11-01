@@ -6,6 +6,7 @@ import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 /** Sole serial writer to the car. An explicit STOP packet is sent when movement times out. */
 public final class CarControl {
@@ -26,6 +27,11 @@ public final class CarControl {
     private volatile boolean manual;
     private volatile long deadline;
     private volatile String active = "stop";
+    private final AtomicLong motionEpoch = new AtomicLong();
+    private volatile String lastTxCommand = "none";
+    private volatile String lastTxStatus = "not_sent";
+    private volatile long lastTxAt;
+    private volatile long lastStopLogAt;
 
     public CarControl(CarNetwork network, CarLog log) {
         this.network = network;
@@ -47,8 +53,15 @@ public final class CarControl {
     public boolean armed() { return armed; }
     public boolean manual() { return manual; }
     public void setManual(boolean value) { manual = value; }
+    public String activeCommand() { return active; }
+    public long remainingMs() { return "stop".equals(active) ? 0 : Math.max(0, deadline - SystemClock.elapsedRealtime()); }
+    public String lastTxCommand() { return lastTxCommand; }
+    public String lastTxStatus() { return lastTxStatus; }
+    public long lastTxAgeMs() { return lastTxAt == 0 ? -1 : Math.max(0, SystemClock.elapsedRealtime() - lastTxAt); }
+    public boolean candidateProtocol() { return config.wltoys; }
 
     public synchronized void configure(Config next) {
+        motionEpoch.incrementAndGet();
         armed = false;
         manual = false;
         deadline = 0;
@@ -100,8 +113,9 @@ public final class CarControl {
             if (fromAi && manual) return "blocked: manual priority";
             int ms = Math.max(100, Math.min(fromAi ? 650 : 500, requestedMs));
             final String command = direction;
+            final long epoch = motionEpoch.get();
             io.execute(() -> {
-                if (!armed) return;
+                if (!armed || motionEpoch.get() != epoch || (fromAi && manual)) return;
                 active = command;
                 deadline = SystemClock.elapsedRealtime() + ms;
                 sendInternal(command);
@@ -113,6 +127,7 @@ public final class CarControl {
     }
 
     public void emergencyStop() {
+        motionEpoch.incrementAndGet();
         deadline = 0;
         active = "stop";
         io.execute(() -> stopInternal("E-STOP"));
@@ -134,9 +149,19 @@ public final class CarControl {
             byte[] bytes = c.wltoys ? WltoysProtocol.control(direction) :
                     CommandCodec.encode(c.payloads.get(direction), c.hex);
             network.send(c.host, c.port, c.tcp, bytes);
-            log.i("TX", direction + " bytes=" + bytes.length + " hex=" + CommandCodec.hex(bytes) +
-                    " (TX only; no device ACK)");
+            lastTxCommand = direction;
+            lastTxStatus = "sent_without_hardware_ack";
+            lastTxAt = SystemClock.elapsedRealtime();
+            // Avoid flooding on-screen logs with 10 neutral heartbeats/sec.
+            if (!"stop".equals(direction) || lastTxAt - lastStopLogAt >= 2000) {
+                log.i("TX", direction + " bytes=" + bytes.length + " hex=" + CommandCodec.hex(bytes) +
+                        " (TX only; no device ACK)");
+                if ("stop".equals(direction)) lastStopLogAt = lastTxAt;
+            }
         } catch (Exception e) {
+            lastTxCommand = direction;
+            lastTxStatus = "failed_" + e.getClass().getSimpleName();
+            lastTxAt = SystemClock.elapsedRealtime();
             log.e("TX", direction + " failed=" + e.getClass().getSimpleName() + ": " + e.getMessage());
             if (!"stop".equals(direction)) {
                 armed = false;

@@ -36,7 +36,9 @@ public final class CarNetwork {
         return fallback;
     }
 
-    /** Prefer cellular when the car's Wi-Fi has no internet; do not bind the whole process. */
+    /** Prefer a separately validated cellular network for car Wi-Fi. When no car is present,
+     * allow ordinary internet Wi-Fi for read-only Live tool smoke tests. Never bind the process.
+     */
     public Network internet(Network car) {
         Network fallback = null;
         for (Network n : cm.getAllNetworks()) {
@@ -47,7 +49,16 @@ public final class CarNetwork {
             if (cap.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) return n;
             fallback = n;
         }
-        return fallback;
+        if (fallback != null) return fallback;
+        return isValidatedInternet(car) ? car : null;
+    }
+
+    public boolean isValidatedInternet(Network n) {
+        if (n == null) return false;
+        NetworkCapabilities cap = cm.getNetworkCapabilities(n);
+        return cap != null &&
+                cap.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) &&
+                cap.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
     }
 
     public URLConnection carConnection(URL url) throws Exception {
