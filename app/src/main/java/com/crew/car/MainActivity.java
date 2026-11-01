@@ -84,6 +84,7 @@ public final class MainActivity extends Activity {
                 stopCameraReceiver();
             }
             maybeStartCamera();
+            updateNetworkStatus();
             main.postDelayed(this, 2500);
         }
     };
@@ -159,8 +160,18 @@ public final class MainActivity extends Activity {
         banner.setPadding(dp(12), dp(6), dp(12), dp(4));
         banner.setOrientation(LinearLayout.VERTICAL);
         screen.addView(banner);
-        row(banner, button("Crew Car · FPV", v -> {}), button("設定／診斷", v -> toggleMode()));
-        modeButton = (Button) ((LinearLayout) banner.getChildAt(0)).getChildAt(1);
+        LinearLayout topRow = new LinearLayout(this);
+        topRow.setOrientation(LinearLayout.HORIZONTAL);
+        topRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView brand = new TextView(this);
+        brand.setText("Crew Car · FPV");
+        brand.setTextColor(Color.rgb(22, 32, 46));
+        brand.setTextSize(20);
+        brand.setTypeface(null, Typeface.BOLD);
+        topRow.addView(brand, new LinearLayout.LayoutParams(0, dp(50), 1));
+        modeButton = button("設定／診斷", v -> toggleMode());
+        topRow.addView(modeButton, new LinearLayout.LayoutParams(dp(116), dp(50)));
+        banner.addView(topRow);
         netStatus = label(banner, "檢查網路中…", 12);
         cameraStatus = label(banner, "攝影機未連線", 12);
 
