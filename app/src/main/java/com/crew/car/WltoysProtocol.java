@@ -40,9 +40,19 @@ public final class WltoysProtocol {
         if (steerDirection < -1 || steerDirection > 1 ||
                 throttleDirection < -1 || throttleDirection > 1)
             throw new IllegalArgumentException("axis must be -1, 0, or 1");
-        int steer = CENTER + steerDirection * STEERING_DELTA;
-        int throttle = CENTER + throttleDirection * THROTTLE_DELTA;
-        return packet(steer, throttle, CENTER);
+        return control(steerDirection, throttleDirection, CarTuning.OEM);
+    }
+
+    /** Apply bounded gains without modifying neutral or the OEM packet/checksum layout. */
+    public static byte[] control(int steerDirection, int throttleDirection, CarTuning tuning) {
+        if (tuning == null) throw new IllegalArgumentException("tuning missing");
+        if (steerDirection < -1 || steerDirection > 1 ||
+                throttleDirection < -1 || throttleDirection > 1)
+            throw new IllegalArgumentException("axis must be -1, 0, or 1");
+        int scaledSteer = Math.round(STEERING_DELTA * tuning.steeringPercent / 100f);
+        int scaledThrottle = Math.round(THROTTLE_DELTA * tuning.throttlePercent / 100f);
+        return packet(CENTER + steerDirection * scaledSteer,
+                CENTER + throttleDirection * scaledThrottle, CENTER);
     }
 
     public static byte[] packet(int steer, int throttle, int trim) {

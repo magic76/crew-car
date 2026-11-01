@@ -28,6 +28,7 @@ import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.ArrayAdapter;
 import android.widget.TextView;
+import android.widget.SeekBar;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -45,7 +46,9 @@ public final class MainActivity extends Activity {
     private GeminiLive gemini;
 
     private EditText host, port, cameraUrl, key, prompt;
-    private Spinner transport, encoding, profile, cameraAdapter;
+    private Spinner transport, encoding, profile, cameraAdapter, tuningPreset;
+    private SeekBar tuningPeriod, tuningSteer, tuningThrottle;
+    private TextView tuningPreview, tuningActive, txDiagnostics;
     private TextView netStatus, cameraStatus, liveStatus, transcript, logs;
     private ImageView preview;
     private SurfaceView hevcPreview;
@@ -85,6 +88,7 @@ public final class MainActivity extends Activity {
             }
             maybeStartCamera();
             updateNetworkStatus();
+            updateTxStatus();
             main.postDelayed(this, 2500);
         }
     };
@@ -276,7 +280,7 @@ public final class MainActivity extends Activity {
                 new String[]{"自訂封包（空白時禁止解鎖）", "WL FPV 原廠 16-byte profile（UDP 23458）"}));
         profile.setSelection(getPreferences(MODE_PRIVATE).getInt("protocol_profile", 1));
         root.addView(profile);
-        label(root, "已預選原廠對照 profile；手動控制仍需勾選解鎖。可同時按兩個方向做斜向移動；全部放開才送 STOP。", 12);
+        label(root, "已預選原廠對照 profile；手動控制需勾選解鎖。可拖曳盤斜向移動。", 12);
         profile.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(android.widget.AdapterView<?> parent, View view, int position, long id) {
                 control.disarm();
@@ -284,6 +288,59 @@ public final class MainActivity extends Activity {
             }
             @Override public void onNothingSelected(android.widget.AdapterView<?> parent) {}
         });
+        label(root, "操控調校｜預設與實際週期", 17)
+                .setTypeface(null, Typeface.BOLD);
+        label(root, "控制週期越短不一定越順。先以原廠 50ms 為基準；降低油門／轉向幅度可減少突兀感。", 12);
+        tuningPreset = new Spinner(this);
+        tuningPreset.setAdapter(new ArrayAdapter<>(this,
+                android.R.layout.simple_spinner_dropdown_item,
+                new String[]{"柔和｜50ms・轉向65%・油門60%",
+                        "原廠基準｜50ms・全部100%",
+                        "省封包｜70ms・全部75%",
+                        "靈敏實驗｜40ms・全部100%"}));
+        tuningPreset.setSelection(getPreferences(MODE_PRIVATE).getInt("tuning_preset", 1));
+        root.addView(tuningPreset);
+        int savedPeriod = getPreferences(MODE_PRIVATE).getInt("tuning_interval", 50);
+        int savedSteer = getPreferences(MODE_PRIVATE).getInt("tuning_steer", 100);
+        int savedThrottle = getPreferences(MODE_PRIVATE).getInt("tuning_throttle", 100);
+        tuningPeriod = tuningBar(root, "控制傳送週期（40–100ms，每格10ms）",
+                6, (savedPeriod - 40) / 10);
+        tuningSteer = tuningBar(root, "轉向幅度（50–100%，每格5%）",
+                10, (savedSteer - 50) / 5);
+        tuningThrottle = tuningBar(root, "油門幅度（50–100%，每格5%）",
+                10, (savedThrottle - 50) / 5);
+        tuningPreview = label(root, "", 13);
+        tuningPreset.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+            private boolean first = true;
+            @Override public void onItemSelected(android.widget.AdapterView<?> parent,
+                                                 View view, int index, long id) {
+                if (first) { first = false; updateTuningPreview(); return; }
+                CarTuning t = CarTuning.preset(index);
+                tuningPeriod.setProgress((t.intervalMs - 40) / 10);
+                tuningSteer.setProgress((t.steeringPercent - 50) / 5);
+                tuningThrottle.setProgress((t.throttlePercent - 50) / 5);
+                updateTuningPreview();
+            }
+            @Override public void onNothingSelected(android.widget.AdapterView<?> parent) {}
+        });
+        updateTuningPreview();
+        row(root, button("套用調校（停車上鎖）", v -> {
+                    emergencyStopAndLock();
+                    if (applyConfig()) {
+                        updateTuningPreview();
+                        log.i("TUNE", "user applied " + control.tuning() +
+                                " (requires manual re-arm)");
+                    }
+                }),
+                button("恢復原廠基準", v -> {
+                    tuningPreset.setSelection(1);
+                    tuningPeriod.setProgress(1);
+                    tuningSteer.setProgress(10);
+                    tuningThrottle.setProgress(10);
+                    updateTuningPreview();
+                }));
+        txDiagnostics = label(root, "本機封包診斷：尚未測試", 12);
+        label(root, "本機傳送耗時／間隔不是小車回應時間，也不能用來推算實際車速。", 12);
         host = field(root, "控制端 IP", saved("host", "172.16.11.1"), false);
         port = field(root, "自訂模式控制 Port（原廠 profile 固定 23458）", saved("port", "23458"), true);
         transport = new Spinner(this);
@@ -345,6 +402,7 @@ public final class MainActivity extends Activity {
             else main.postDelayed(manualPulse, 180);
         });
         driveConsole.addView(drivePad, new LinearLayout.LayoutParams(-1, dp(188)));
+        tuningActive = label(driveConsole, "控制基準：50ms｜轉向100%｜油門100%", 12);
 
         label(root, "3. Gemini 3.8 Live（手機麥克風 + 車頭畫面）", 17).setTypeface(null, Typeface.BOLD);
         label(root, "使用自己的 API Key；只放在記憶體，不寫入設定與 Log。連小車 Wi-Fi 時請保持行動數據。", 12);
@@ -382,7 +440,49 @@ public final class MainActivity extends Activity {
         logs = label(root, "", 11);
         logs.setTextIsSelectable(true);
         updateNetworkStatus();
+        updateTxStatus();
         updateMode();
+    }
+
+    private SeekBar tuningBar(LinearLayout root, String title, int max, int initial) {
+        label(root, title, 12);
+        SeekBar bar = new SeekBar(this);
+        bar.setMax(max);
+        bar.setProgress(Math.max(0, Math.min(max, initial)));
+        bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar v, int progress, boolean fromUser) {
+                updateTuningPreview();
+            }
+            @Override public void onStartTrackingTouch(SeekBar v) {}
+            @Override public void onStopTrackingTouch(SeekBar v) {}
+        });
+        root.addView(bar);
+        return bar;
+    }
+
+    private CarTuning selectedTuning() {
+        return new CarTuning(40 + tuningPeriod.getProgress() * 10,
+                50 + tuningSteer.getProgress() * 5,
+                50 + tuningThrottle.getProgress() * 5);
+    }
+
+    private void updateTuningPreview() {
+        if (tuningPreview == null || tuningPeriod == null ||
+                tuningSteer == null || tuningThrottle == null) return;
+        CarTuning t = selectedTuning();
+        tuningPreview.setText("準備套用：" + t.intervalMs + "ms（約 " +
+                (1000 / t.intervalMs) + "次／秒）｜轉向" + t.steeringPercent +
+                "%｜油門" + t.throttlePercent + "%。按套用後需重新解鎖。");
+    }
+
+    private void updateTxStatus() {
+        if (txDiagnostics != null) txDiagnostics.setText("本機封包診斷：" + control.diagnosticSummary());
+        if (tuningActive != null) {
+            CarTuning active = control.tuning();
+            tuningActive.setText("已套用：" + active.intervalMs + "ms｜轉向" +
+                    active.steeringPercent + "%｜油門" + active.throttlePercent +
+                    "%（不代表實際車速）");
+        }
     }
 
     private void toggleMode() {
@@ -423,6 +523,7 @@ public final class MainActivity extends Activity {
                     Integer.parseInt(port.getText().toString().trim());
             cfg.tcp = !cfg.wltoys && transport.getSelectedItemPosition() == 1;
             cfg.hex = encoding.getSelectedItemPosition() == 0;
+            cfg.tuning = selectedTuning();
             for (Map.Entry<String, EditText> e : packets.entrySet()) {
                 String value = e.getValue().getText().toString().trim();
                 cfg.payloads.put(e.getKey(), value);
@@ -435,9 +536,14 @@ public final class MainActivity extends Activity {
                     .putInt("encoding", encoding.getSelectedItemPosition())
                     .putInt("protocol_profile", profile.getSelectedItemPosition())
                     .putInt("camera_adapter", cameraAdapter.getSelectedItemPosition())
+                    .putInt("tuning_interval", cfg.tuning.intervalMs)
+                    .putInt("tuning_steer", cfg.tuning.steeringPercent)
+                    .putInt("tuning_throttle", cfg.tuning.throttlePercent)
+                    .putInt("tuning_preset", tuningPreset.getSelectedItemPosition())
                     .apply();
             control.configure(cfg);
-            log.i("UI", "control config applied, safety lock ON");
+            updateTxStatus();
+            log.i("UI", "control config applied, safety lock ON; tuning=" + cfg.tuning);
             return true;
         } catch (Exception e) {
             log.e("UI", "config invalid: " + e.getMessage());
@@ -563,6 +669,14 @@ public final class MainActivity extends Activity {
                         "last_tx_direction", control.lastTxCommand(),
                         "last_tx_status", control.lastTxStatus(),
                         "last_tx_age_ms", control.lastTxAgeMs(),
+                        "configured_tx_interval_ms", control.tuning().intervalMs,
+                        "configured_steering_percent", control.tuning().steeringPercent,
+                        "configured_throttle_percent", control.tuning().throttlePercent,
+                        "local_tx_count", control.txPackets(),
+                        "local_tx_failures", control.txFailures(),
+                        "local_last_tx_gap_ms", control.lastTxGapMs(),
+                        "local_max_tx_gap_ms", control.maxTxGapMs(),
+                        "local_last_send_duration_ms", control.lastSendDurationMs(),
                         "hardware_sensor", "camera_only",
                         "distance_sensor_available", false,
                         "odometry_available", false,
