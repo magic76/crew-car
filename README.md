@@ -60,3 +60,14 @@ A read-only tool smoke-test button has been added. Without the car, connect Live
 ## Hardware clarification: camera-only sensor
 
 The physical car has **only a camera**, besides Wi-Fi control of its motors. No range sensor, collision sensor, GPS, odometry, battery telemetry, or motion acknowledgment is available. `get_car_status` is solely Android local state; `get_camera_status` is solely camera transport health. The actual images are streamed separately through Gemini Live. The app now tracks whether camera JPEGs were queued to the active Live WebSocket and will reject AI motor pulses when no recent frame was queued. Queued does **not** prove Gemini decoded/understood the frame.
+
+## 0.1.3: fixed FPV driving console and camera resume
+
+- Camera SurfaceView stays visible above the diagnostics pane and the touch driving pad. The `設定／診斷` button toggles advanced controls/logs without tearing down the Surface.
+- A single eight-direction drag pad avoids relying on two simultaneous Button touch targets. Press/drag updates combined steering and throttle, release/cancel sends STOP, a 180ms refresh preserves the existing 500ms watchdog. Manual control still requires explicit human arming.
+- The large red `緊急停止` is fixed outside the scrollable pane. E-STOP disarms the car; resuming requires human re-arm.
+- Camera start waits for the H.265 SurfaceHolder lifecycle; the Activity tries to resume after returning from Wi-Fi settings and after offline car Wi-Fi appears. Auto-start deliberately avoids regular validated Internet Wi-Fi; manual reconnect overrides it. Manual camera STOP suppresses automatic retries until reconnect is explicitly requested.
+- CarControl still transmits WL FPV packets at the OEM-derived 50ms cadence, but now reuses a Wi-Fi-bound UDP control socket rather than opening a fresh socket per packet. A Wi-Fi/endpoint change recreates the socket.
+- Diagnostic data remains observational, not vehicle ACK or obstacle detection. No camera image protocol is claimed verified just because the UI resumes reliably.
+
+See [docs/DRIVER_CONSOLE_QA.md](docs/DRIVER_CONSOLE_QA.md) for acceptance cases and follow-up camera diagnosis.

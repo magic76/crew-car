@@ -207,7 +207,7 @@ public final class CarControl {
             } else {
                 bytes = CommandCodec.encode(c.payloads.get(direction), c.hex);
             }
-            network.send(c.host, c.port, c.tcp, bytes);
+            network.sendControl(c.host, c.port, c.tcp, bytes);
             lastTxCommand = direction;
             lastTxStatus = "sent_without_hardware_ack";
             lastTxAt = SystemClock.elapsedRealtime();
@@ -233,6 +233,7 @@ public final class CarControl {
 
     public void shutdown() {
         disarm();
+        io.execute(network::closeControlChannel);
         io.shutdown();
     }
 }

@@ -38,6 +38,8 @@ public final class WltoysVideoStream {
         this.log = log;
     }
 
+    public boolean isRunning() { return running; }
+
     public synchronized void start(String host, SurfaceView view, Consumer<Bitmap> frameCallback,
                                    Consumer<String> statusCallback) {
         stop();
