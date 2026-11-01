@@ -11,7 +11,7 @@ The manufacturer's APK was observed transmitting its 16-byte UDP motor frame rou
 | 省封包 | 70ms | 75% | 75% | Test reduced motor traffic when phone or car struggles |
 | 靈敏實驗 | 40ms | 100% | 100% | Try only after stable baseline; NOT guaranteed lower latency |
 
-An advanced slider allows **40–100ms in 10ms steps** and **50–100%** of original steering/throttle deltas in 5% steps. The app cannot exceed previously observed OEM maximum command amplitude. Neutral STOP is always 0x80 for steering and throttle, irrespective of gains. Changing or applying any settings must **STOP, disarm, and require deliberate human re-arming**.
+An advanced slider allows **40–100ms in 10ms steps** and **50–100%** of original steering/throttle deltas in 5% steps. The app cannot exceed previously observed OEM maximum command amplitude. Neutral STOP is always 0x80 for steering and throttle, irrespective of gains. Moving a slider only changes the **pending** values, not a running vehicle. **Applying** settings must STOP, disarm, and require deliberate human re-arming.
 
 The timer uses `scheduleWithFixedDelay`, not a catch-up fixed-rate queue: when the device is stalled, skipped packets are not burst-sent afterwards. UI pad input is refreshed every 180ms solely to extend the 500ms watchdog; repeated identical WL-style commands are no longer separately enqueued. Changes in steering/throttle are queued immediately. The dedicated safety watchdog stays on **25ms checks** and AI pulses remain capped at **650ms**.
 
