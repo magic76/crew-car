@@ -55,6 +55,10 @@ public final class MainActivity extends Activity {
     private GeminiLive gemini;
     private CrewVision crewVision;
     private VisionOverlay visionOverlay;
+    private final VisionDebugMetrics visionMetrics = new VisionDebugMetrics();
+    private TextView visionDebugHud;
+    private boolean visionDebugShown;
+    private volatile long lastRenderedHevcAt;
     private Button visionButton, followButton, lockButton;
     private volatile boolean visionEnabled;
     private long followLastLogAt;
@@ -81,6 +85,7 @@ public final class MainActivity extends Activity {
                 else aiDriveStatus.setText("AI 巡航：未啟用｜手動按住前進／倒車持續送包");
             }
             if (followButton != null) updateFollowButton();
+            updateVisionDebugHud();
             main.postDelayed(this, 250);
         }
     };
@@ -135,8 +140,9 @@ public final class MainActivity extends Activity {
             if (visionEnabled && drivingMode && cameraRunning &&
                     currentCameraAdapter == 0 && hevcPreview != null &&
                     hevcPreview.isAvailable() && hevcPreview.getWidth() > 0 &&
-                    hevcPreview.getHeight() > 0 && cameraAgeMs() >= 0 &&
-                    cameraAgeMs() <= 1500 && !crewVision.busy()) {
+                    hevcPreview.getHeight() > 0 &&
+                    visionCameraAgeMs() >= 0 && visionCameraAgeMs() <= 650 &&
+                    crewVision.ready() && !crewVision.busy()) {
                 try {
                     int width = 320;
                     int height = Math.max(1, Math.round(width *
@@ -152,7 +158,7 @@ public final class MainActivity extends Activity {
                     (visionOverlay == null || visionOverlay.targetLost() ||
                     visionOverlay.selectedTarget() == null ||
                     SystemClock.elapsedRealtime() - visionOverlay.lastFrameAt() > 400)) {
-                control.stopVisionFollow();
+                control.stopVisionFollow("person lost or inference stale");
                 updateFollowButton();
                 log.i("FOLLOW", "target or image stale; STOP");
             }
@@ -204,10 +210,12 @@ public final class MainActivity extends Activity {
                 }
                 visionOverlay.update(people, frameAt, inferMs, aspect,
                         currentCameraAdapter == 1);
+                visionMetrics.observe(frameAt, SystemClock.elapsedRealtime(), inferMs,
+                        people.size(), visionOverlay.selectedTarget());
                 if (control.visionFollowActive()) {
                     PersonTracker.Box target = visionOverlay.selectedTarget();
                     if (target == null || visionOverlay.targetLost()) {
-                        control.stopVisionFollow();
+                        control.stopVisionFollow("vision target lost");
                         updateFollowButton();
                         log.i("FOLLOW", "selected person lost; STOP");
                     } else {
@@ -215,7 +223,7 @@ public final class MainActivity extends Activity {
                         if (!step.moving()) {
                             // One visual risk condition ends the entire session.
                             // Never resume on its own when the person appears smaller again.
-                            control.stopVisionFollow();
+                            control.stopVisionFollow(step.reason);
                             updateFollowButton();
                             log.i("FOLLOW", step.reason + " — session cancelled; STOP");
                             return;
@@ -234,9 +242,11 @@ public final class MainActivity extends Activity {
                             " inferMs=" + inferMs + " (display only)");
             }
             @Override public void onError(String message) {
+                control.stopVisionFollow("vision detector failure");
                 visionEnabled = false;
                 if (visionOverlay != null) visionOverlay.setVisionEnabled(false);
                 updateVisionButton();
+                updateVisionDebugHud();
                 android.widget.Toast.makeText(MainActivity.this, message,
                         android.widget.Toast.LENGTH_LONG).show();
                 log.e("VISION", message);
@@ -249,14 +259,14 @@ public final class MainActivity extends Activity {
                 !visionOverlay.targetLost() && visionOverlay.lastFrameAt() > 0 &&
                 SystemClock.elapsedRealtime() - visionOverlay.lastFrameAt() <= 400 &&
                 cameraRunning && routes.wifi() != null &&
-                cameraAgeMs() >= 0 && cameraAgeMs() <= 1200);
+                visionCameraAgeMs() >= 0 && visionCameraAgeMs() <= 650);
         control.setAiSafetyGate(() -> foreground && gemini.ready() &&
                 routes.wifi() != null && cameraAgeMs() >= 0 &&
                 cameraAgeMs() <= 2500 && gemini.liveVideoAgeMs() >= 0 &&
                 gemini.liveVideoAgeMs() <= 2500);
         render();
         log.setListener(s -> runOnUiThread(() -> { if (logs != null) logs.setText(s); }));
-        log.i("APP", "Crew Car v0.1.20; Crew Vision offline detection is display-only; no vehicle ACK");
+        log.i("APP", "Crew Car v0.1.23; local Vision follow and Motor Safety Core; no vehicle ACK");
         routes.diagnostics();
     }
 
@@ -422,6 +432,8 @@ public final class MainActivity extends Activity {
         // True full-bleed FPV; translucent driving controls are layered above.
         cockpit.addView(cameraFrame,
                 new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
+        visionDebugShown = getPreferences(MODE_PRIVATE)
+                .getBoolean("vision_debug_hud", false);
 
         preview = new ImageView(this);
         preview.setBackgroundColor(Color.rgb(22, 32, 46));
@@ -455,7 +467,10 @@ public final class MainActivity extends Activity {
                 }
                 return true;
             }
-            @Override public void onSurfaceTextureUpdated(SurfaceTexture surface) {}
+            @Override public void onSurfaceTextureUpdated(SurfaceTexture surface) {
+                // Render callback timestamp, NOT hardware exposure timestamp.
+                lastRenderedHevcAt = SystemClock.elapsedRealtime();
+            }
         });
 
         settingsScroller = new ScrollView(this);
@@ -528,6 +543,18 @@ public final class MainActivity extends Activity {
         });
         drivePad.setControlsAvailable(false);
         cockpit.addView(drivePad, new FrameLayout.LayoutParams(-1, -1));
+        visionDebugHud = new TextView(this);
+        visionDebugHud.setTextSize(11);
+        visionDebugHud.setTextColor(Color.WHITE);
+        visionDebugHud.setBackgroundColor(Color.argb(190, 13, 27, 39));
+        visionDebugHud.setPadding(dp(8), dp(4), dp(8), dp(4));
+        visionDebugHud.setClickable(false);
+        visionDebugHud.setFocusable(false);
+        FrameLayout.LayoutParams debugParams = new FrameLayout.LayoutParams(
+                -2, -2, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        debugParams.topMargin = dp(33);
+        cockpit.addView(visionDebugHud, debugParams);
+        updateVisionDebugHud();
         // Settings are an overlay; the TextureView is not detached or restarted.
         cockpit.addView(settingsShell, new FrameLayout.LayoutParams(-1, -1));
         // STOP is the last/topmost cockpit child, ABOVE driving touch and settings.
@@ -782,7 +809,7 @@ public final class MainActivity extends Activity {
             if (!gemini.sendText(prompt.getText().toString())) log.e("LIVE", "請先連線 Gemini");
             else log.i("LIVE", "text turn sent (content redacted)");
         }), new LinearLayout.LayoutParams(-1, dp(50)));
-        label(root, "Gemini 可使用：drive_car、set_drive_state（最長保持5秒）、stop_car、lock_car、get_car_status、get_camera_status、get_network_status。左側快捷可直接啟動對話。", 12);
+        label(root, "Gemini 可使用短移動、最長 30 秒受限租期、停止／上鎖與只讀狀態查詢。此功能不會取得 Vision 的跟隨授權。", 12);
         root.addView(button("測試 AI 查詢工具（不移動）", v -> {
             if (!gemini.sendText("請先呼叫 get_car_status、get_camera_status、get_network_status，然後用繁體中文告訴我連線與安全狀態，不要移動小車。")) {
                 log.e("TOOL", "Live disconnected; cannot request tool smoke test");
@@ -793,6 +820,16 @@ public final class MainActivity extends Activity {
 
         settingsCuts[6] = root.getChildCount(); // Gemini Live
         label(root, "4. Debug（adb logcat -s CrewCar:D）", 17).setTypeface(null, Typeface.BOLD);
+        CheckBox visionHudToggle = new CheckBox(this);
+        visionHudToggle.setText("FPV 顯示 Vision 診斷 HUD（只有數字，不存影像）");
+        visionHudToggle.setChecked(visionDebugShown);
+        visionHudToggle.setOnCheckedChangeListener((button, checked) -> {
+            visionDebugShown = checked;
+            getPreferences(MODE_PRIVATE).edit()
+                    .putBoolean("vision_debug_hud", checked).apply();
+            updateVisionDebugHud();
+        });
+        root.addView(visionHudToggle, new LinearLayout.LayoutParams(-1, dp(48)));
         row(root, button("匯出 Debug 文字", v -> {
             Intent send = new Intent(Intent.ACTION_SEND);
             send.setType("text/plain");
@@ -1260,6 +1297,8 @@ public final class MainActivity extends Activity {
         cameraNetwork = null;
         if (camera != null) camera.stop();
         if (wltoysVideo != null) wltoysVideo.stop();
+        lastRenderedHevcAt = 0;
+        visionMetrics.reset();
         // A restarted camera must not inherit detections from the old feed/session.
         if (control != null) control.stopVisionFollow();
         updateFollowButton();
@@ -1356,7 +1395,7 @@ public final class MainActivity extends Activity {
                 visionOverlay.selectedTarget() == null ||
                 visionOverlay.targetLost() ||
                 SystemClock.elapsedRealtime() - visionOverlay.lastFrameAt() > 350 ||
-                cameraAgeMs() < 0 || cameraAgeMs() > 1200 || routes.wifi() == null ||
+                visionCameraAgeMs() < 0 || visionCameraAgeMs() > 650 || routes.wifi() == null ||
                 !control.armed() || control.manual() || control.aiHoldActive() ||
                 activeProfile != CarProfile.WL_TECH) {
             android.widget.Toast.makeText(this,
@@ -1383,6 +1422,32 @@ public final class MainActivity extends Activity {
                 .show();
     }
 
+    /** Local rendered-image / screen-capture recency; not sensor exposure latency. */
+    private long visionCameraAgeMs() {
+        long at = currentCameraAdapter == 0 ? lastRenderedHevcAt : lastCameraFrame;
+        return at <= 0 ? -1 : Math.max(0, SystemClock.elapsedRealtime() - at);
+    }
+
+    private void updateVisionDebugHud() {
+        if (visionDebugHud == null) return;
+        boolean visible = visionDebugShown && drivingMode && visionEnabled;
+        visionDebugHud.setVisibility(visible ? View.VISIBLE : View.GONE);
+        if (!visible || control == null) return;
+        long age = visionMetrics.resultAgeMs(SystemClock.elapsedRealtime());
+        PersonTracker.Box target = visionOverlay == null ? null : visionOverlay.selectedTarget();
+        String info = String.format(java.util.Locale.US,
+                "Vision %.1f FPS  |  推論 %dms  |  擷取→回報 %dms  |  影格 %s\n" +
+                "人數 %d  |  目標 %.0f%%  |  中心偏差 %+.2f  |  %s",
+                visionMetrics.fps(), visionMetrics.inferenceMs(),
+                visionMetrics.processingMs(), age < 0 ? "無" : age + "ms",
+                visionMetrics.people(), target == null ? 0f : target.score * 100f,
+                target == null ? 0f : target.centerX() - .5f, control.owner());
+        String stop = control.lastStopReason();
+        visionDebugHud.setText(info + "\n停止原因：" + stop +
+                " | STOP 本地送出 " + control.lastStopLocalDelayMs() +
+                "ms（無車端 ACK）");
+    }
+
     private void updateVisionButton() {
         if (visionButton == null) return;
         visionButton.setText(visionEnabled ? "辨識 ●" : "辨識");
@@ -1393,12 +1458,14 @@ public final class MainActivity extends Activity {
     private void toggleVision() {
         control.stopVisionFollow();
         visionEnabled = !visionEnabled;
+        visionMetrics.reset();
         if (visionOverlay != null) visionOverlay.setVisionEnabled(visionEnabled);
         crewVision.setEnabled(visionEnabled);
         updateVisionButton();
         updateFollowButton();
+        updateVisionDebugHud();
         log.i("VISION", visionEnabled ?
-                "offline person detection enabled (no automatic steering/throttle)" :
+                "offline person detection enabled; motor follow separately authorized" :
                 "person detection stopped, target cleared");
     }
 
@@ -1537,6 +1604,11 @@ public final class MainActivity extends Activity {
                         "safety_armed", control.armed(),
                         "manual_override", control.manual(),
                         "active_command", control.activeCommand(),
+                        "motor_authority", control.owner().name(),
+                        "last_stop_reason", control.lastStopReason(),
+                        "last_stop_local_send_delay_ms", control.lastStopLocalDelayMs(),
+                        "last_stop_sent_at_elapsed_ms", control.lastStopSentAt(),
+                        "stop_burst_attempts", control.stopBurstAttempts(),
                         "pulse_remaining_ms", control.remainingMs(),
                         "ai_hold_active", control.aiHoldActive(),
                         "ai_steering", control.aiSteering(),
@@ -1587,7 +1659,15 @@ public final class MainActivity extends Activity {
                         "people_detected", visionOverlay == null ? 0 : visionOverlay.personCount(),
                         "selected_target", visionOverlay != null && visionOverlay.hasSelection(),
                         "selected_target_lost", visionOverlay != null && visionOverlay.targetLost(),
-                        "vision_can_control_motors", false,
+                        "vision_follow_capable", control.candidateProtocol() &&
+                                activeProfile == CarProfile.WL_TECH,
+                        "vision_follow_active", control.visionFollowActive(),
+                        "vision_can_control_motors", control.visionFollowActive(),
+                        "vision_inference_fps", (double) visionMetrics.fps(),
+                        "vision_inference_ms", visionMetrics.inferenceMs(),
+                        "vision_capture_to_callback_ms", visionMetrics.processingMs(),
+                        "vision_result_age_ms", visionMetrics.resultAgeMs(SystemClock.elapsedRealtime()),
+                        "vision_stop_reason", control.lastStopReason(),
                         "distance_sensor_available", false,
                         "collision_sensor_available", false,
                         "note", "Camera only: JPEG queued to Live != model received/understood it. No measured depth or obstacle clearance.");
@@ -1681,7 +1761,8 @@ public final class MainActivity extends Activity {
         main.removeCallbacks(cameraMonitor);
         main.removeCallbacks(aiDriveTicker);
         main.removeCallbacks(visionSampler);
-        if (control != null) control.stopVisionFollow();
+        if (control != null) control.stopVisionFollow("app background");
+        visionMetrics.reset();
         if (crewVision != null) crewVision.setEnabled(false);
         visionEnabled = false;
         if (visionOverlay != null) visionOverlay.setVisionEnabled(false);

@@ -183,3 +183,11 @@ The previously permanent **62dp bottom footer** is gone, giving full-bleed FPV m
 The red **■ 急停** floats in the bottom-right of the cockpit, always above the driving controls and the settings sheet. It triggers STOP **on finger down**, including while another finger holds the throttle. The reverse button's visible and active hit region is shortened above the STOP with a tested **12dp gap**, so tapping STOP cannot be a reverse command. The tuning status moves into the Controls settings tab. Settings still stops/disarms, shows a locked indicator and never enables the header unlock until returning to driving.
 
 **No changes:** motor sender/protocol, 180ms manual renewal, 500ms watchdog, Gemini tools, local person-following safety/8-second authorization, FPV decoding or display cutout insets. See [v0.1.22 on-device QA](docs/COMPACT_DRIVER_LOCK_QA.md). This change requires local build and physical-device verification; it is not a verified hardware STOP implementation.
+
+## v0.1.23 — Motor Safety Core and Vision Debug
+
+The motor sender now records explicit exclusive ownership (LOCKED, IDLE, MANUAL, GEMINI, VISION) and rechecks ownership and command epoch before queued automated work reaches the same serial WL UDP writer. An E-STOP immediately invalidates pending movement and queues a neutral packet; WL UDP also retries neutral twice on the **same control socket** while the STOP epoch remains valid. This increases best-effort redundancy, **not guaranteed hardware delivery**. The diagnostics panel reports local STOP timing, owner and reason instead of claiming a car acknowledgment.
+
+A local, opt-in Vision Debug HUD is available under **進階與診斷**. It shows completed inference FPS, model/callback timing, target confidence and lateral offset, motor owner and last stop reason. It is off by default and no camera image is saved. The HEVC Vision freshness check now uses live render timestamps rather than the separate 1 FPS Gemini capture ticker. Exposure-to-motion latency and safe physical distance are still unmeasured.
+
+Pure-Java arbitration/telemetry tests and an [Android CI workflow](.github/workflows/android-safety-check.yml) were added. Local device and raised-wheel testing remain mandatory; see [v0.1.23 safety QA](docs/MOTOR_SAFETY_VISION_DEBUG_QA.md).

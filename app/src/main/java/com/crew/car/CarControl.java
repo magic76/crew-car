@@ -48,6 +48,12 @@ public final class CarControl {
     private volatile String lastTxStatus = "not_sent";
     private volatile long lastTxAt;
     private volatile long lastStopLogAt;
+    private volatile String lastStopReason = "not_requested";
+    private volatile long lastStopRequestedAt;
+    private volatile long lastStopSentAt;
+    private volatile long lastStopLocalDelayMs = -1;
+    private volatile long stopBurstAttempts;
+    private static final int[] STOP_RETRY_DELAYS_MS = {45, 110};
     private ScheduledFuture<?> transmitTicker;
     private volatile long txPackets;
     private volatile long txFailures;
@@ -133,6 +139,17 @@ public final class CarControl {
         txPackets = 0;
         txFailures = 0;
     }
+    public MotorAuthorityPolicy.Owner owner() {
+        return MotorAuthorityPolicy.current(armed, manual, aiHoldActive, visionFollowActive);
+    }
+    public String lastStopReason() { return lastStopReason; }
+    public long lastStopLocalDelayMs() { return lastStopLocalDelayMs; }
+    public long lastStopAgeMs() {
+        return lastStopRequestedAt <= 0 ? -1 :
+                Math.max(0L, SystemClock.elapsedRealtime() - lastStopRequestedAt);
+    }
+    public long lastStopSentAt() { return lastStopSentAt; }
+    public long stopBurstAttempts() { return stopBurstAttempts; }
     public boolean armed() { return armed; }
     public boolean manual() { return manual; }
     public void setManual(boolean value) {
@@ -165,7 +182,10 @@ public final class CarControl {
     public long maxTxGapMs() { return maxTxGapMs; }
     public long lastSendDurationMs() { return lastSendDurationMs; }
     public String diagnosticSummary() {
-        return "設定週期 " + config.tuning.intervalMs + "ms | 本機傳送 " + txPackets +
+        return "控制權 " + owner() + " | 最後停止 " + lastStopReason +
+                " | 本地停車送出延遲 " + lastStopLocalDelayMs +
+                "ms（非車端 ACK） | 停車重送 " + stopBurstAttempts + " | 設定週期 " +
+                config.tuning.intervalMs + "ms | 本機傳送 " + txPackets +
                 " | 失敗 " + txFailures + " | 上次間隔 " +
                 (lastTxGapMs < 0 ? "—" : lastTxGapMs + "ms") +
                 " | 最長間隔 " + maxTxGapMs + "ms | 最後送出耗時 " +
@@ -259,11 +279,15 @@ public final class CarControl {
             if (fromAi && visionFollowActive) return "blocked: visual follow owns controls";
             if (fromAi && aiHoldActive)
                 return "blocked: throttle is held; use steer_car or set_drive_state with throttle=keep (no brake sent)";
+            if (fromAi && !MotorAuthorityPolicy.canClaim(owner(), MotorAuthorityPolicy.Owner.GEMINI))
+                return "blocked: motor authority unavailable";
             int ms = Math.max(100, Math.min(fromAi ? 650 : 500, requestedMs));
             final String command = direction;
             final long epoch = motionEpoch.get();
             io.execute(() -> {
-                if (!armed || motionEpoch.get() != epoch || (fromAi && manual)) return;
+                if (!armed || motionEpoch.get() != epoch || (fromAi && manual) ||
+                        (fromAi && !MotorAuthorityPolicy.canClaim(
+                                owner(), MotorAuthorityPolicy.Owner.GEMINI))) return;
                 deadline = SystemClock.elapsedRealtime() + ms;
                 if (!command.equals(active) || !config.wltoys) {
                     active = command;
@@ -288,6 +312,9 @@ public final class CarControl {
         if (!armed) return "blocked: control locked";
         if (manual) return "blocked: manual priority";
         if (visionFollowActive) return "blocked: visual follow owns controls";
+        if (!MotorAuthorityPolicy.canClaim(owner(), MotorAuthorityPolicy.Owner.GEMINI) &&
+                !MotorAuthorityPolicy.canUpdate(owner(), MotorAuthorityPolicy.Owner.GEMINI))
+            return "blocked: motor authority unavailable";
         if (!config.wltoys) return "blocked: sustained two-axis control requires WL profile";
         boolean prior = aiHoldActive();
         if (("keep".equals(steering) || "keep".equals(throttle)) && !prior)
@@ -306,7 +333,9 @@ public final class CarControl {
         final String cmd = "axes:" + steer + ":" + gas;
         final long epoch = motionEpoch.get();
         io.execute(() -> {
-            if (!armed || manual || epoch != motionEpoch.get()) return;
+            if (!armed || manual || visionFollowActive || epoch != motionEpoch.get() ||
+                    (!MotorAuthorityPolicy.canClaim(owner(), MotorAuthorityPolicy.Owner.GEMINI) &&
+                     !MotorAuthorityPolicy.canUpdate(owner(), MotorAuthorityPolicy.Owner.GEMINI))) return;
             try {
                 if (!aiSafetyGate.getAsBoolean()) {
                     armed = false;
@@ -345,10 +374,14 @@ public final class CarControl {
         if (violation != null) return violation;
         if (!aiHoldActive() || !armed) return "blocked: no active AI throttle lease";
         if (manual) return "blocked: manual priority";
+        if (!MotorAuthorityPolicy.canUpdate(owner(), MotorAuthorityPolicy.Owner.GEMINI))
+            return "blocked: motor authority unavailable";
         final int requested = "left".equals(direction) ? -1 : "right".equals(direction) ? 1 : 0;
         final long epoch = motionEpoch.get();
         io.execute(() -> {
-            if (!aiHoldActive() || manual || epoch != motionEpoch.get()) return;
+            if (!aiHoldActive() || manual || epoch != motionEpoch.get() ||
+                    !MotorAuthorityPolicy.canUpdate(owner(), MotorAuthorityPolicy.Owner.GEMINI))
+                return;
             boolean safe;
             try { safe = aiSafetyGate.getAsBoolean(); } catch (Exception ex) { safe = false; }
             if (!safe) {
@@ -377,7 +410,7 @@ public final class CarControl {
      * The motor output is gain-capped to 50% of OEM deltas, no reverse.
      */
     public synchronized String beginVisionFollow() {
-        if (!armed || manual || aiHoldActive || visionFollowActive ||
+        if (!MotorAuthorityPolicy.canClaim(owner(), MotorAuthorityPolicy.Owner.VISION) ||
                 !"stop".equals(active))
             return "blocked: car must be armed and stationary, no manual/AI drive";
         if (!config.wltoys) return "blocked: visual following supports WL only";
@@ -394,7 +427,9 @@ public final class CarControl {
     }
 
     public String driveVisionAxes(int steer, int forward, long observedAt) {
-        if (!visionFollowActive()) return "blocked: visual follow inactive";
+        if (!visionFollowActive() ||
+                !MotorAuthorityPolicy.canUpdate(owner(), MotorAuthorityPolicy.Owner.VISION))
+            return "blocked: visual follow inactive";
         if (steer < -1 || steer > 1 || forward < 0 || forward > 1)
             return "blocked: vision axes invalid";
         long now = SystemClock.elapsedRealtime();
@@ -404,6 +439,7 @@ public final class CarControl {
         io.execute(() -> {
             long current = SystemClock.elapsedRealtime();
             if (!visionFollowActive || !armed || manual || aiHoldActive ||
+                    !MotorAuthorityPolicy.canUpdate(owner(), MotorAuthorityPolicy.Owner.VISION) ||
                     epoch != motionEpoch.get() || current - observedAt > 250 ||
                     current >= visionFollowLimitAt) return;
             boolean safe;
@@ -425,10 +461,12 @@ public final class CarControl {
         return "queued visual axes, short lease; no vehicle ACK";
     }
 
-    public void stopVisionFollow() {
+    public void stopVisionFollow() { stopVisionFollow("vision stopped"); }
+
+    public void stopVisionFollow(String reason) {
         if (visionFollowActive) {
             visionFollowActive = false;
-            emergencyStop();
+            emergencyStop(reason);
         }
     }
 
@@ -437,6 +475,10 @@ public final class CarControl {
         if (steer < -1 || steer > 1 || throttle < -1 || throttle > 1)
             return "blocked: axis must be -1, 0, or 1";
         if (!armed) return "blocked: control locked";
+        if (steer != 0 || throttle != 0) {
+            if (!MotorAuthorityPolicy.canUpdate(owner(), MotorAuthorityPolicy.Owner.MANUAL))
+                return "blocked: manual motor authority unavailable";
+        }
         if (steer == 0 && throttle == 0) {
             emergencyStop();
             return "stopped";
@@ -451,7 +493,9 @@ public final class CarControl {
         final String command = "axes:" + steer + ":" + throttle;
         final long epoch = motionEpoch.get();
         io.execute(() -> {
-            if (!armed || motionEpoch.get() != epoch || !manual) return;
+            if (!armed || motionEpoch.get() != epoch || !manual ||
+                    !MotorAuthorityPolicy.canUpdate(owner(), MotorAuthorityPolicy.Owner.MANUAL))
+                return;
             deadline = SystemClock.elapsedRealtime() + 500;
             if (!command.equals(active)) {
                 active = command;
@@ -461,7 +505,13 @@ public final class CarControl {
         return "queued axes " + steer + "," + throttle + " (unacknowledged)";
     }
 
-    public void emergencyStop() {
+    public void emergencyStop() { emergencyStop("E-STOP"); }
+
+    private void emergencyStop(String reason) {
+        lastStopReason = reason;
+        final long stopRequestedAt = SystemClock.elapsedRealtime();
+        lastStopRequestedAt = stopRequestedAt;
+        lastStopLocalDelayMs = -1;
         visionFollowActive = false;
         visionFollowLimitAt = 0;
         aiSteerReleaseAt = 0;
@@ -472,7 +522,7 @@ public final class CarControl {
         Config target = config;
         deadline = 0;
         active = "stop";
-        io.execute(() -> stopInternal("E-STOP", target));
+        io.execute(() -> stopInternal(reason, target, stopRequestedAt));
     }
 
     private void stopInternal(String reason) {
@@ -480,7 +530,15 @@ public final class CarControl {
     }
 
     private void stopInternal(String reason, Config target) {
-        motionEpoch.incrementAndGet(); // invalidate every pending motor command on fail-safe STOP
+        stopInternal(reason, target, SystemClock.elapsedRealtime());
+    }
+
+    private void stopInternal(String reason, Config target, long requestedAt) {
+        long now = SystemClock.elapsedRealtime();
+        lastStopRequestedAt = requestedAt;
+        lastStopLocalDelayMs = -1;
+        lastStopReason = reason;
+        long stopEpoch = motionEpoch.incrementAndGet(); // invalidate pending motor commands
         visionFollowActive = false;
         visionFollowLimitAt = 0;
         aiSteerReleaseAt = 0;
@@ -491,6 +549,21 @@ public final class CarControl {
         deadline = 0;
         log.i("SAFETY", "STOP reason=" + reason);
         sendInternal("stop", target);
+        // Best-effort neutral redundancy on the SAME persistent WL UDP socket.
+        // These cannot preempt an already blocked sender or guarantee car receipt.
+        if (target.wltoys && hasStopPayload(target)) {
+            final long retryScheduledAt = now;
+            for (int delay : STOP_RETRY_DELAYS_MS) {
+                io.schedule(() -> {
+                    if (motionEpoch.get() == stopEpoch &&
+                            "stop".equals(active) &&
+                            SystemClock.elapsedRealtime() - retryScheduledAt < 300) {
+                        stopBurstAttempts++;
+                        sendInternal("stop", target);
+                    }
+                }, delay, TimeUnit.MILLISECONDS);
+            }
+        }
     }
 
     private void sendInternal(String direction) {
@@ -541,6 +614,11 @@ public final class CarControl {
             lastTxCommand = direction;
             lastTxStatus = "sent_without_hardware_ack";
             lastTxAt = finished;
+            if ("stop".equals(direction)) {
+                lastStopSentAt = finished;
+                if (lastStopLocalDelayMs < 0 && lastStopRequestedAt > 0)
+                    lastStopLocalDelayMs = Math.max(0L, finished - lastStopRequestedAt);
+            }
             txPackets++;
             boolean directionChanged = !direction.equals(lastLoggedDirection);
             if (directionChanged || finished - lastDetailedTxLogAt >= 2500) {
