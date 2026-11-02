@@ -63,7 +63,11 @@ public final class MainActivity extends Activity {
                             "｜方向 " + (control.aiSteering() < 0 ? "左" :
                                     control.aiSteering() > 0 ? "右" : "回正") +
                             "｜剩餘 " + control.aiLeaseRemainingMs() + "ms（逾時停車）");
-                else aiDriveStatus.setText("AI 油門保持：未啟用");
+                else if (control.manual() && heldThrottle != 0)
+                    aiDriveStatus.setText("手動油門持續送包：" +
+                            (heldThrottle > 0 ? "前進" : "倒車") + "｜" +
+                            control.tuning().intervalMs + "ms／包");
+                else aiDriveStatus.setText("AI 巡航：未啟用｜手動按住前進／倒車持續送包");
             }
             main.postDelayed(this, 250);
         }
@@ -101,7 +105,7 @@ public final class MainActivity extends Activity {
         @Override public void run() {
             if (!foreground || !control.armed() || (heldSteer == 0 && heldThrottle == 0)) return;
             control.driveManualAxes(heldSteer, heldThrottle);
-            main.postDelayed(this, 180);
+            main.postDelayed(this, 120);
         }
     };
     private final Runnable cameraMonitor = new Runnable() {
@@ -140,7 +144,7 @@ public final class MainActivity extends Activity {
                 gemini.liveVideoAgeMs() <= 2500);
         render();
         log.setListener(s -> runOnUiThread(() -> { if (logs != null) logs.setText(s); }));
-        log.i("APP", "Crew Car v0.1.15; half-duplex Live and bounded AI drive hold; no vehicle ACK");
+        log.i("APP", "Crew Car v0.1.16; manual held throttle + AI local cruise/steer, no vehicle ACK");
         routes.diagnostics();
     }
 
@@ -299,7 +303,7 @@ public final class MainActivity extends Activity {
             control.setManual(true);
             String result = control.driveManualAxes(steer, throttle);
             if (result.startsWith("blocked")) log.e("SAFETY", result);
-            else main.postDelayed(manualPulse, 180);
+            else main.postDelayed(manualPulse, 120);
         });
         cockpit.addView(drivePad, new FrameLayout.LayoutParams(-1, -1));
         // Settings are an overlay; the TextureView is not detached or restarted.
@@ -475,7 +479,7 @@ public final class MainActivity extends Activity {
                 control.disarm();
             }
         });
-        label(root, "按住移動；所有方向鍵放開才送 STOP。斷訊 / 逾時也會嘗試送 STOP；未收到車輛 ACK。", 12);
+        label(root, "按住前進／倒車會由本機持續送封包，直到放開、急停或失去控制更新。AI 油門保持可一次最多 30 秒，方向可以獨立微調；車端沒有 ACK。", 12);
 
         Button stopButton = button("■ 急停 STOP · 上鎖", v -> emergencyStopAndLock());
         stopButton.setTextColor(Color.WHITE);
@@ -974,6 +978,16 @@ public final class MainActivity extends Activity {
             @Override public void onSpeechState(boolean speaking) {
                 runOnUiThread(() -> updateTalkButtons());
             }
+            @Override public String onSteer(String direction, int holdMs) {
+                if (!control.armed()) return "blocked: manual safety lock";
+                if (!control.aiHoldActive())
+                    return "blocked: no active AI cruise; start with set_drive_state first";
+                if (cameraAgeMs() < 0 || cameraAgeMs() > 2500 ||
+                        !gemini.ready() || gemini.liveVideoAgeMs() < 0 ||
+                        gemini.liveVideoAgeMs() > 2500 || routes.wifi() == null)
+                    return "blocked: camera/Live/Wi-Fi stale";
+                return control.steerAi(direction, holdMs);
+            }
             @Override public String onDriveState(String steering, String throttle, int leaseMs) {
                 if (!control.armed()) return "blocked: manual safety lock";
                 if (cameraAgeMs() < 0 || cameraAgeMs() > 2500 ||
@@ -1001,6 +1015,8 @@ public final class MainActivity extends Activity {
                         "ai_steering", control.aiSteering(),
                         "ai_throttle", control.aiThrottle(),
                         "ai_lease_remaining_ms", control.aiLeaseRemainingMs(),
+                        "manual_held_steering", heldSteer,
+                        "manual_held_throttle", heldThrottle,
                         "car_profile", activeProfile.id,
                         "kl_protocol_verified", KlFpvProtocol.isVerified(),
                         "candidate_wltoys_protocol", control.candidateProtocol(),

@@ -21,8 +21,7 @@ public final class DualStickDriveView extends View {
     private final Listener listener;
     private final int colorPanel = Color.rgb(17, 26, 39);
     private final int colorAccent = Color.rgb(33, 211, 216);
-    private int throttlePointer = -1;
-    private int buttonThrottle;
+    private final ThrottleHoldInput throttleHold = new ThrottleHoldInput();
 
     public DualStickDriveView(Context context, Listener listener) {
         super(context);
@@ -95,7 +94,7 @@ public final class DualStickDriveView extends View {
 
     private void drawThrottleButton(Canvas c, float left, float top, float right, float bottom,
                                     int value, String label) {
-        boolean active = buttonThrottle == value;
+        boolean active = throttleHold.throttle() == value;
         paint.setColor(active ? colorAccent : Color.rgb(42, 62, 82));
         c.drawRoundRect(left, top, right, bottom, dp(14), dp(14), paint);
         paint.setTextAlign(Paint.Align.CENTER);
@@ -119,22 +118,21 @@ public final class DualStickDriveView extends View {
     }
 
     private void notifyChanged(int oldSteer, int oldThrottle) {
-        if (oldSteer != input.steering() || oldThrottle != buttonThrottle) {
+        if (oldSteer != input.steering() || oldThrottle != throttleHold.throttle()) {
             invalidate();
-            listener.onAxes(input.steering(), buttonThrottle);
+            listener.onAxes(input.steering(), throttleHold.throttle());
         }
     }
 
     public void cancelInput() {
-        int oldSteer = input.steering(), oldThrottle = buttonThrottle;
+        int oldSteer = input.steering(), oldThrottle = throttleHold.throttle();
         input.cancel();
-        throttlePointer = -1;
-        buttonThrottle = 0;
+        throttleHold.cancel();
         notifyChanged(oldSteer, oldThrottle);
     }
 
     @Override public boolean onTouchEvent(MotionEvent event) {
-        int beforeSteer = input.steering(), beforeThrottle = buttonThrottle;
+        int beforeSteer = input.steering(), beforeThrottle = throttleHold.throttle();
         int action = event.getActionMasked();
         if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN) {
             int index = event.getActionIndex();
@@ -142,10 +140,7 @@ public final class DualStickDriveView extends View {
             float x = event.getX(index), y = event.getY(index);
             if (x >= getWidth() * (1f - DualStickInput.SIDE_FRACTION)) {
                 int pressed = throttleButtonAt(x, y);
-                if (pressed != 0 && throttlePointer == -1) {
-                    throttlePointer = id;
-                    buttonThrottle = pressed;
-                }
+                throttleHold.down(id, pressed);
             } else {
                 input.down(id, x, y, getWidth(), getHeight());
             }
@@ -155,23 +150,16 @@ public final class DualStickDriveView extends View {
                 int id = event.getPointerId(index);
                 float x = event.getX(index), y = event.getY(index);
                 input.move(id, x, y, getWidth(), getHeight());
-                if (id == throttlePointer && throttleButtonAt(x, y) != buttonThrottle) {
-                    throttlePointer = -1;
-                    buttonThrottle = 0;
-                }
+                throttleHold.move(id, x, y); // drift is not an accelerator release
             }
         } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_POINTER_UP) {
             int id = event.getPointerId(event.getActionIndex());
             input.up(id);
-            if (id == throttlePointer) {
-                throttlePointer = -1;
-                buttonThrottle = 0;
-            }
+            throttleHold.up(id);
             if (action == MotionEvent.ACTION_UP) performClick();
         } else if (action == MotionEvent.ACTION_CANCEL) {
             input.cancel();
-            throttlePointer = -1;
-            buttonThrottle = 0;
+            throttleHold.cancel();
         }
         notifyChanged(beforeSteer, beforeThrottle);
         return true;

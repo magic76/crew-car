@@ -15,7 +15,10 @@ public final class AiHoldPolicyTest {
     @Test public void enforcesBoundedLease() {
         assertNull(CarToolPolicy.validateHold("center", "forward", 500));
         assertNull(CarToolPolicy.validateHold("center", "forward", 5000));
-        for (int ms : new int[]{-10, 0, 100, 499, 5001, 60_000}) {
+        assertNull(CarToolPolicy.validateHold("center", "forward", 30000));
+        assertEquals(15000, CarToolPolicy.DEFAULT_HOLD_MS);
+        assertEquals(30000, CarToolPolicy.MAX_HOLD_MS);
+        for (int ms : new int[]{-10, 0, 100, 499, 30001, 60_000}) {
             assertNotNull("duration " + ms,
                     CarToolPolicy.validateHold("center", "forward", ms));
         }
@@ -27,6 +30,13 @@ public final class AiHoldPolicyTest {
         assertNotNull(CarToolPolicy.validateHold("diagonal", "forward", 2000));
         assertNotNull(CarToolPolicy.validateHold("right", "accelerate", 2000));
         assertTrue(CarToolPolicy.isSupported("set_drive_state"));
+        assertTrue(CarToolPolicy.isSupported("steer_car"));
+        assertNull(CarToolPolicy.validateSteer("left", 100));
+        assertNull(CarToolPolicy.validateSteer("right", 550));
+        assertNull(CarToolPolicy.validateSteer("center", 2000));
+        assertNotNull(CarToolPolicy.validateSteer("up", 550));
+        assertNotNull(CarToolPolicy.validateSteer("left", 2001));
+        assertNotNull(CarToolPolicy.validateSteer("left", 0));
         assertFalse(CarToolPolicy.isSupported("unlock_car"));
         assertFalse(CarToolPolicy.isSupported("set_speed_kmh"));
     }
