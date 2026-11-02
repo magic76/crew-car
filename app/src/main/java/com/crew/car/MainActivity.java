@@ -406,6 +406,8 @@ public final class MainActivity extends Activity {
         driveConsole.setPadding(dp(8), dp(2), dp(8), dp(2));
         driveConsole.setBackgroundColor(Color.rgb(232, 239, 246));
         screen.addView(driveConsole, new LinearLayout.LayoutParams(-1, dp(62)));
+        // Capture the original form sections; preserve every existing input callback.
+        int[] settingsCuts = new int[8];
         TextView heading = label(root, "車輛與連線", 17);
         heading.setTypeface(null, Typeface.BOLD);
         label(root, "選擇車型並確認 Wi-Fi。進入設定時車輛會先停止並上鎖，返回駕駛後再解鎖。", 13);
@@ -415,6 +417,7 @@ public final class MainActivity extends Activity {
                     updateNetworkStatus();
                 }));
 
+        settingsCuts[0] = root.getChildCount(); // vehicle intro / Wi-Fi actions
         label(root, "1. FPV 攝影機（KL 影像協定待驗證）", 17).setTypeface(null, Typeface.BOLD);
         cameraAdapter = new Spinner(this);
         cameraAdapter.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item,
@@ -452,6 +455,7 @@ public final class MainActivity extends Activity {
                     emergencyStopAndLock();
                 }));
 
+        settingsCuts[1] = root.getChildCount(); // camera / FPV
         label(root, "2. 車型選擇與小車控制", 17).setTypeface(null, Typeface.BOLD);
         label(root, "WL Tech 已有原廠候選控制協定；KL FPV 需本地 Agent 擷取資料後再實作，不能套用 WL 封包。", 12);
         profile = new Spinner(this);
@@ -466,6 +470,7 @@ public final class MainActivity extends Activity {
             }
             @Override public void onNothingSelected(android.widget.AdapterView<?> parent) {}
         });
+        settingsCuts[2] = root.getChildCount(); // vehicle profile
         label(root, "操控調校｜預設與實際週期", 17)
                 .setTypeface(null, Typeface.BOLD);
         label(root, "週期越短，重複封包越密；原廠基準為 50ms。30／20／10ms 是頻率實驗值，測試時請架空車輪。", 12);
@@ -527,6 +532,7 @@ public final class MainActivity extends Activity {
                     tuningThrottle.setProgress(10);
                     updateTuningPreview();
                 }));
+        settingsCuts[3] = root.getChildCount(); // control tuning
         txDiagnostics = label(root, "本機封包診斷：尚未測試", 12);
         label(root, "本機傳送耗時／間隔不是小車回應時間，也不能用來推算實際車速。", 12);
         host = field(root, "控制端 IP", saved("host", "172.16.11.1"), false);
@@ -548,6 +554,7 @@ public final class MainActivity extends Activity {
                     applyConfig();
                 }), button("立即停止", v -> emergencyStopAndLock()));
 
+        settingsCuts[4] = root.getChildCount(); // advanced protocol fields
         arm = new CheckBox(this);
         arm.setText("解鎖駕駛");
         arm.setTextSize(13);
@@ -585,6 +592,7 @@ public final class MainActivity extends Activity {
         tuningActive.setPadding(dp(6), 0, 0, 0);
         tuningActive.setLayoutParams(new LinearLayout.LayoutParams(dp(190), -1));
 
+        settingsCuts[5] = root.getChildCount(); // control hold explanation
         label(root, "3. Gemini 3.8 Live（手機麥克風 + 車頭畫面）", 17).setTypeface(null, Typeface.BOLD);
         label(root, "使用自己的 API Key；輸入後會加密保存於本機，不寫入 Log。連小車 Wi-Fi 時請保持行動數據。", 12);
         key = field(root, "Gemini API Key（自動加密保存）", LocalSecretStore.readGeminiKey(this), false);
@@ -624,6 +632,7 @@ public final class MainActivity extends Activity {
         transcript = label(root, "對話顯示區（僅保留最新訊息）", 13);
         transcript.setMinHeight(dp(50));
 
+        settingsCuts[6] = root.getChildCount(); // Gemini Live
         label(root, "4. Debug（adb logcat -s CrewCar:D）", 17).setTypeface(null, Typeface.BOLD);
         row(root, button("匯出 Debug 文字", v -> {
             Intent send = new Intent(Intent.ACTION_SEND);
@@ -633,6 +642,8 @@ public final class MainActivity extends Activity {
         }), button("重新檢查網路", v -> routes.diagnostics()));
         logs = label(root, "", 11);
         logs.setTextIsSelectable(true);
+        settingsCuts[7] = root.getChildCount(); // debug
+        repartitionSettings(root, settingsCuts);
         switchingCarProfile = true;
         restoreVehicleSettings();
         switchingCarProfile = false;
@@ -640,6 +651,66 @@ public final class MainActivity extends Activity {
         updateNetworkStatus();
         updateTxStatus();
         updateMode();
+    }
+
+    /**
+     * Build category panels by MOVING existing form Views without reconstructing them.
+     * This keeps all original preference bindings, listeners, spinners and callbacks.
+     * Sections in original order:
+     * vehicle intro, camera, vehicle profile, tuning, protocol, control notes,
+     * Gemini, diagnostics.
+     */
+    private void repartitionSettings(LinearLayout root, int[] cuts) {
+        if (cuts.length != 8 || cuts[7] != root.getChildCount())
+            throw new IllegalStateException("settings section boundaries changed");
+        int previous = 0;
+        for (int cut : cuts) {
+            if (cut < previous || cut > cuts[7])
+                throw new IllegalStateException("invalid settings section");
+            previous = cut;
+        }
+        settingsSections = new LinearLayout[4];
+        for (int i = 0; i < settingsSections.length; i++) {
+            LinearLayout content = new LinearLayout(this);
+            content.setOrientation(LinearLayout.VERTICAL);
+            content.setPadding(0, 0, 0, dp(16));
+            settingsSections[i] = content;
+        }
+        int count = cuts[7];
+        for (int i = 0; i < count; i++) {
+            View element = root.getChildAt(0);
+            root.removeViewAt(0);
+            int chunk = 0;
+            while (chunk < cuts.length - 1 && i >= cuts[chunk]) chunk++;
+            int section;
+            switch (chunk) {
+                case 0: case 2: section = 0; break; // vehicle and Wi-Fi
+                case 3: case 5: section = 1; break; // touch and motor tuning
+                case 1: case 6: section = 2; break; // FPV and Gemini
+                default: section = 3; break; // protocol / diagnostics
+            }
+            settingsSections[section].addView(element);
+        }
+        for (LinearLayout panel : settingsSections) root.addView(panel);
+        setSettingsTab(0);
+    }
+
+    private void setSettingsTab(int selected) {
+        if (settingsSections == null || selected < 0 || selected >= settingsSections.length)
+            return;
+        activeSettingsTab = selected;
+        for (int i = 0; i < settingsSections.length; i++) {
+            boolean active = selected == i;
+            settingsSections[i].setVisibility(active ? View.VISIBLE : View.GONE);
+            if (settingsNavButtons != null && settingsNavButtons[i] != null) {
+                Button button = settingsNavButtons[i];
+                button.setTextColor(active ? Color.WHITE : Color.rgb(28, 45, 60));
+                button.setBackgroundTintList(android.content.res.ColorStateList.valueOf(
+                        active ? Color.rgb(37, 81, 113) : Color.rgb(234, 241, 247)));
+            }
+        }
+        if (settingsScroller != null)
+            settingsScroller.post(() -> settingsScroller.scrollTo(0, 0));
     }
 
     private SeekBar tuningBar(LinearLayout root, String title, int max, int initial) {
