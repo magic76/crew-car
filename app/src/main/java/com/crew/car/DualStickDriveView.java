@@ -114,7 +114,7 @@ public final class DualStickDriveView extends View {
         paint.setFakeBoldText(true);
         c.drawText("方向", width * .5f, dp(20), paint);
         float left = dp(4), right = width - dp(4), top = dp(28), bottom = height - dp(22);
-        float mid = width * .5f, gap = dp(4);
+        float mid = width * .5f, gap = width * .06f; // matches SteeringButtonInput.hit
         drawSteeringButton(c, left, top, mid - gap, bottom, -1, "◀");
         drawSteeringButton(c, mid + gap, top, right, bottom, 1, "▶");
         paint.setFakeBoldText(false);
