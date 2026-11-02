@@ -75,6 +75,9 @@ public final class MainActivity extends Activity {
     private SeekBar tuningPeriod, tuningSteer, tuningThrottle;
     private TextView tuningPreview, tuningActive, txDiagnostics;
     private TextView netStatus, cameraStatus, liveStatus, driverLiveStatus, transcript, logs;
+    private TextView vehicleTitle;
+    private CarProfile activeProfile = CarProfile.WL_TECH;
+    private boolean switchingCarProfile;
     private ImageView preview;
     private TextureView hevcPreview;
     private CheckBox arm;
@@ -123,6 +126,8 @@ public final class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        activeProfile = CarProfile.fromIndex(getPreferences(MODE_PRIVATE)
+                .getInt("protocol_profile", 1));
         log = new CarLog();
         routes = new CarNetwork(this, log);
         control = new CarControl(routes, log);
@@ -200,7 +205,8 @@ public final class MainActivity extends Activity {
         topRow.setOrientation(LinearLayout.HORIZONTAL);
         topRow.setGravity(Gravity.CENTER_VERTICAL);
         TextView brand = new TextView(this);
-        brand.setText("Crew Car · FPV");
+        vehicleTitle = brand;
+        brand.setText("Crew Car · " + activeProfile.label);
         brand.setTextColor(Color.rgb(22, 32, 46));
         brand.setTextSize(17);
         brand.setTypeface(null, Typeface.BOLD);
@@ -314,7 +320,7 @@ public final class MainActivity extends Activity {
                     updateNetworkStatus();
                 }));
 
-        label(root, "1. FPV 攝影機（WLtoys UDP H.265 / HTTP）", 17).setTypeface(null, Typeface.BOLD);
+        label(root, "1. FPV 攝影機（KL 影像協定待驗證）", 17).setTypeface(null, Typeface.BOLD);
         cameraAdapter = new Spinner(this);
         cameraAdapter.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item,
                 new String[]{"WLtoys 6405 UDP H.265（候選協定）", "HTTP JPEG/MJPEG（自訂）"}));
@@ -328,6 +334,7 @@ public final class MainActivity extends Activity {
         hevcPreview.setVisibility(cameraAdapter.getSelectedItemPosition() == 0 ? View.VISIBLE : View.GONE);
         cameraAdapter.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(android.widget.AdapterView<?> parent, View view, int position, long id) {
+                if (switchingCarProfile) return;
                 stopCameraReceiver();
                 currentCameraAdapter = position;
                 lastCameraFrame = 0;
@@ -350,18 +357,17 @@ public final class MainActivity extends Activity {
                     emergencyStopAndLock();
                 }));
 
-        label(root, "2. 小車控制（原廠 App log 部分觀察）", 17).setTypeface(null, Typeface.BOLD);
-        label(root, "原廠 APK 對照到 UDP 172.16.11.1:23458、16-byte 控制框架及約 50ms 週期；中立封包與原廠初始化值相符，尚無車端 ACK。", 12);
+        label(root, "2. 車型選擇與小車控制", 17).setTypeface(null, Typeface.BOLD);
+        label(root, "WL Tech 已有原廠候選控制協定；KL FPV 需本地 Agent 擷取資料後再實作，不能套用 WL 封包。", 12);
         profile = new Spinner(this);
         profile.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item,
-                new String[]{"自訂封包（空白時禁止解鎖）", "WL FPV 原廠 16-byte profile（UDP 23458）"}));
-        profile.setSelection(getPreferences(MODE_PRIVATE).getInt("protocol_profile", 1));
+                new String[]{"自訂封包", "WL Tech FPV（現有）", "KL FPV（待驗證）"}));
+        profile.setSelection(activeProfile.spinnerIndex);
         root.addView(profile);
-        label(root, "已預選原廠對照 profile；手動控制需勾選解鎖。可拖曳盤斜向移動。", 12);
+        label(root, "切換車型會先停車上鎖，各車獨立保存 IP／影像／調校。KL 在驗證前禁止解鎖或發送影像初始化封包。", 12);
         profile.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(android.widget.AdapterView<?> parent, View view, int position, long id) {
-                control.disarm();
-                if (arm != null) uncheck();
+                switchVehicle(CarProfile.fromIndex(position));
             }
             @Override public void onNothingSelected(android.widget.AdapterView<?> parent) {}
         });
@@ -397,6 +403,7 @@ public final class MainActivity extends Activity {
             @Override public void onItemSelected(android.widget.AdapterView<?> parent,
                                                  View view, int index, long id) {
                 if (first) { first = false; updateTuningPreview(); return; }
+                if (switchingCarProfile) return;
                 CarTuning t = CarTuning.preset(index);
                 tuningPeriod.setProgress((t.intervalMs - CarTuning.MIN_INTERVAL_MS) /
                         CarTuning.INTERVAL_STEP_MS);
@@ -529,6 +536,10 @@ public final class MainActivity extends Activity {
         }), button("重新檢查網路", v -> routes.diagnostics()));
         logs = label(root, "", 11);
         logs.setTextIsSelectable(true);
+        switchingCarProfile = true;
+        restoreVehicleSettings();
+        switchingCarProfile = false;
+        if (activeProfile == CarProfile.KL_FPV) cameraWanted = false;
         updateNetworkStatus();
         updateTxStatus();
         updateMode();
@@ -548,6 +559,85 @@ public final class MainActivity extends Activity {
         });
         root.addView(bar);
         return bar;
+    }
+
+
+    private String vehicleSavedText(String name, String fallback) {
+        android.content.SharedPreferences p = getPreferences(MODE_PRIVATE);
+        String key = activeProfile.settingKey(name);
+        if (p.contains(key)) return p.getString(key, fallback);
+        return activeProfile == CarProfile.WL_TECH ? saved(name, fallback) : fallback;
+    }
+
+    private int vehicleSavedInt(String name, int fallback) {
+        android.content.SharedPreferences p = getPreferences(MODE_PRIVATE);
+        String key = activeProfile.settingKey(name);
+        if (p.contains(key)) return p.getInt(key, fallback);
+        return activeProfile == CarProfile.WL_TECH ? p.getInt(name, fallback) : fallback;
+    }
+
+    private void storeVehicleSettings(CarProfile model) {
+        if (host == null) return;
+        android.content.SharedPreferences.Editor e = getPreferences(MODE_PRIVATE).edit();
+        e.putString(model.settingKey("host"), host.getText().toString().trim());
+        e.putString(model.settingKey("port"), port.getText().toString().trim());
+        e.putString(model.settingKey("camera_url"), cameraUrl.getText().toString().trim());
+        e.putInt(model.settingKey("camera_adapter"), cameraAdapter.getSelectedItemPosition());
+        e.putInt(model.settingKey("transport"), transport.getSelectedItemPosition());
+        e.putInt(model.settingKey("encoding"), encoding.getSelectedItemPosition());
+        e.putInt(model.settingKey("tuning_interval"), selectedTuning().intervalMs);
+        e.putInt(model.settingKey("tuning_steer"), selectedTuning().steeringPercent);
+        e.putInt(model.settingKey("tuning_throttle"), selectedTuning().throttlePercent);
+        e.putInt(model.settingKey("tuning_preset"), tuningPreset.getSelectedItemPosition());
+        for (Map.Entry<String, EditText> entry : packets.entrySet())
+            e.putString(model.settingKey("packet_" + entry.getKey()),
+                    entry.getValue().getText().toString().trim());
+        e.apply();
+    }
+
+    private void restoreVehicleSettings() {
+        if (host == null) return;
+        host.setText(vehicleSavedText("host", activeProfile.defaultHost()));
+        port.setText(vehicleSavedText("port", activeProfile.defaultPort()));
+        cameraUrl.setText(vehicleSavedText("camera_url", ""));
+        transport.setSelection(vehicleSavedInt("transport", 0));
+        encoding.setSelection(vehicleSavedInt("encoding", 0));
+        for (Map.Entry<String, EditText> entry : packets.entrySet())
+            entry.getValue().setText(vehicleSavedText("packet_" + entry.getKey(), ""));
+        cameraAdapter.setSelection(vehicleSavedInt("camera_adapter",
+                activeProfile == CarProfile.WL_TECH ? 0 : 1));
+        tuningPreset.setSelection(vehicleSavedInt("tuning_preset", 1));
+        tuningPeriod.setProgress((vehicleSavedInt("tuning_interval", 50) -
+                CarTuning.MIN_INTERVAL_MS) / CarTuning.INTERVAL_STEP_MS);
+        tuningSteer.setProgress((vehicleSavedInt("tuning_steer", 100) - 50) / 5);
+        tuningThrottle.setProgress((vehicleSavedInt("tuning_throttle", 100) - 50) / 5);
+        updateTuningPreview();
+    }
+
+    private void switchVehicle(CarProfile next) {
+        if (next == activeProfile || host == null) return;
+        emergencyStopAndLock();
+        stopCameraReceiver();
+        storeVehicleSettings(activeProfile);
+        activeProfile = next;
+        switchingCarProfile = true;
+        try {
+            restoreVehicleSettings();
+        } finally {
+            switchingCarProfile = false;
+        }
+        vehicleTitle.setText("Crew Car · " + next.label);
+        getPreferences(MODE_PRIVATE).edit()
+                .putInt("protocol_profile", next.spinnerIndex).apply();
+        cameraWanted = next != CarProfile.KL_FPV;
+        cameraManualRequested = false;
+        cameraStatus.setText(next == CarProfile.KL_FPV ?
+                "KL FPV 協定未驗證：馬達與影像封包停用" :
+                "已切換車型；請連接對應小車的 Wi-Fi");
+        if (applyConfig()) {
+            log.i("CAR", "selected model=" + next.id);
+            maybeStartCamera();
+        }
     }
 
     private CarTuning selectedTuning() {
@@ -612,7 +702,8 @@ public final class MainActivity extends Activity {
     private void updateNetworkStatus() {
         if (netStatus != null) {
             Network wifi = routes.wifi();
-            netStatus.setText("小車 Wi-Fi：" + (wifi == null ? "未連線" : "有連線") +
+            netStatus.setText(activeProfile.label + "｜小車 Wi-Fi：" +
+                    (wifi == null ? "未連線" : "有連線") +
                     "  |  Gemini 網路：" +
                     (routes.internet(wifi) != null ? "可用" :
                             routes.cellularRequestActive() ? "準備行動數據中" : "不可用") +
@@ -633,29 +724,35 @@ public final class MainActivity extends Activity {
         try {
             CarControl.Config cfg = new CarControl.Config();
             cfg.host = host.getText().toString().trim();
-            cfg.wltoys = profile.getSelectedItemPosition() == 1;
+            cfg.carProfile = activeProfile;
+            cfg.wltoys = activeProfile == CarProfile.WL_TECH;
+            String rawPort = port.getText().toString().trim();
             cfg.port = cfg.wltoys ? WltoysProtocol.CONTROL_PORT :
-                    Integer.parseInt(port.getText().toString().trim());
+                    (rawPort.isEmpty() ? 0 : Integer.parseInt(rawPort));
             cfg.tcp = !cfg.wltoys && transport.getSelectedItemPosition() == 1;
             cfg.hex = encoding.getSelectedItemPosition() == 0;
             cfg.tuning = selectedTuning();
-            for (Map.Entry<String, EditText> e : packets.entrySet()) {
-                String value = e.getValue().getText().toString().trim();
-                cfg.payloads.put(e.getKey(), value);
-                getPreferences(MODE_PRIVATE).edit().putString("packet_" + e.getKey(), value).apply();
+            for (Map.Entry<String, EditText> entry : packets.entrySet())
+                cfg.payloads.put(entry.getKey(), entry.getValue().getText().toString().trim());
+            storeVehicleSettings(activeProfile);
+            android.content.SharedPreferences.Editor prefs = getPreferences(MODE_PRIVATE).edit();
+            prefs.putInt("protocol_profile", activeProfile.spinnerIndex);
+            // Legacy keys belong to WL only; never overwrite them with KL configuration.
+            if (activeProfile == CarProfile.WL_TECH) {
+                prefs.putString("host", cfg.host).putString("port", String.valueOf(cfg.port))
+                        .putString("camera_url", cameraUrl.getText().toString().trim())
+                        .putInt("transport", transport.getSelectedItemPosition())
+                        .putInt("encoding", encoding.getSelectedItemPosition())
+                        .putInt("camera_adapter", cameraAdapter.getSelectedItemPosition())
+                        .putInt("tuning_interval", cfg.tuning.intervalMs)
+                        .putInt("tuning_steer", cfg.tuning.steeringPercent)
+                        .putInt("tuning_throttle", cfg.tuning.throttlePercent)
+                        .putInt("tuning_preset", tuningPreset.getSelectedItemPosition());
+                for (Map.Entry<String, EditText> entry : packets.entrySet())
+                    prefs.putString("packet_" + entry.getKey(),
+                            entry.getValue().getText().toString().trim());
             }
-            getPreferences(MODE_PRIVATE).edit()
-                    .putString("host", cfg.host).putString("port", String.valueOf(cfg.port))
-                    .putString("camera_url", cameraUrl.getText().toString().trim())
-                    .putInt("transport", transport.getSelectedItemPosition())
-                    .putInt("encoding", encoding.getSelectedItemPosition())
-                    .putInt("protocol_profile", profile.getSelectedItemPosition())
-                    .putInt("camera_adapter", cameraAdapter.getSelectedItemPosition())
-                    .putInt("tuning_interval", cfg.tuning.intervalMs)
-                    .putInt("tuning_steer", cfg.tuning.steeringPercent)
-                    .putInt("tuning_throttle", cfg.tuning.throttlePercent)
-                    .putInt("tuning_preset", tuningPreset.getSelectedItemPosition())
-                    .apply();
+            prefs.apply();
             control.configure(cfg);
             updateTxStatus();
             updateTuningPreview();
@@ -669,6 +766,11 @@ public final class MainActivity extends Activity {
 
     /** Auto-connect on offline car Wi-Fi; manual reconnect can override the check. */
     private void maybeStartCamera() {
+        if (activeProfile == CarProfile.KL_FPV) {
+            if (cameraStatus != null)
+                cameraStatus.setText("KL FPV 影像協定未驗證：串流已停用");
+            return;
+        }
         if (!foreground || !cameraWanted || cameraRunning || cameraAdapter == null) return;
         Network wifi = routes.wifi();
         if (wifi == null) {
@@ -711,6 +813,7 @@ public final class MainActivity extends Activity {
     }
 
     private void startCamera(long token) {
+        if (activeProfile == CarProfile.KL_FPV) return;
         String url = cameraUrl.getText().toString().trim();
         getPreferences(MODE_PRIVATE).edit().putString("camera_url", url)
                 .putInt("camera_adapter", cameraAdapter.getSelectedItemPosition()).apply();
@@ -898,6 +1001,8 @@ public final class MainActivity extends Activity {
                         "ai_steering", control.aiSteering(),
                         "ai_throttle", control.aiThrottle(),
                         "ai_lease_remaining_ms", control.aiLeaseRemainingMs(),
+                        "car_profile", activeProfile.id,
+                        "kl_protocol_verified", KlFpvProtocol.isVerified(),
                         "candidate_wltoys_protocol", control.candidateProtocol(),
                         "last_tx_direction", control.lastTxCommand(),
                         "last_tx_status", control.lastTxStatus(),
@@ -923,7 +1028,8 @@ public final class MainActivity extends Activity {
                 long liveAge = gemini.liveVideoAgeMs();
                 return toolJson(
                         "sensor_type", "camera_only",
-                        "adapter", currentCameraAdapter == 0 ? "WLtoys 6405 UDP HEVC candidate" : "HTTP JPEG/MJPEG",
+                        "adapter", activeProfile == CarProfile.KL_FPV ? "KL unverified (disabled)" :
+                                currentCameraAdapter == 0 ? "WLtoys 6405 UDP HEVC candidate" : "HTTP JPEG/MJPEG",
                         "frames_received", lastCameraFrame != 0,
                         "last_frame_age_ms", age,
                         "fresh", age >= 0 && age <= 2500,

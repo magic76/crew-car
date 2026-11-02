@@ -22,6 +22,7 @@ public final class CarControl {
         public boolean hex;
         /** Open-source candidate firmware profile; user must still explicitly arm. */
         public boolean wltoys;
+        public CarProfile carProfile = CarProfile.WL_TECH;
         public CarTuning tuning = CarTuning.OEM;
         public final Map<String, String> payloads = new HashMap<>();
     }
@@ -138,8 +139,10 @@ public final class CarControl {
     }
 
     public synchronized void configure(Config next) {
-        if (next == null || next.tuning == null)
-            throw new IllegalArgumentException("missing control tuning");
+        if (next == null || next.tuning == null || next.carProfile == null)
+            throw new IllegalArgumentException("missing tuning or vehicle");
+        if (next.carProfile == CarProfile.KL_FPV && next.wltoys)
+            throw new IllegalArgumentException("Cannot send WL commands to KL");
         motionEpoch.incrementAndGet();
         aiHoldActive = false;
         boolean stopPrevious = armed || !"stop".equals(active);
@@ -161,10 +164,12 @@ public final class CarControl {
         log.i("CTRL", "tuning=" + next.tuning +
                 " config host=" + next.host + ":" + next.port +
                 " transport=" + (next.tcp ? "TCP" : "UDP") + " payload=" + (next.hex ? "HEX" : "TEXT") +
-                " wltoysCandidate=" + next.wltoys);
+                " model=" + next.carProfile.id + " wltoysCandidate=" + next.wltoys);
     }
 
     public synchronized String arm() {
+        if (config.carProfile == CarProfile.KL_FPV)
+            return KlFpvProtocol.BLOCKED_REASON;
         if (network.wifi() == null) return "沒有 Wi-Fi 連線";
         if (config.host == null || config.host.isBlank() || config.port < 1 || config.port > 65535)
             return "請設定控制 IP / Port";
@@ -193,7 +198,8 @@ public final class CarControl {
     }
 
     private boolean hasStopPayload(Config c) {
-        if (c == null || c.host == null || c.host.isBlank() || c.port < 1 || c.port > 65535)
+        if (c == null || c.carProfile == CarProfile.KL_FPV || c.host == null ||
+                c.host.isBlank() || c.port < 1 || c.port > 65535)
             return false;
         if (c.wltoys) return !c.tcp && c.port == WltoysProtocol.CONTROL_PORT;
         try {
@@ -346,6 +352,10 @@ public final class CarControl {
     }
 
     private void sendInternal(String direction, Config c) {
+        if (c.carProfile == CarProfile.KL_FPV) {
+            lastTxStatus = "blocked_unverified_kl_fpv";
+            return;
+        }
         try {
             byte[] bytes;
             if (c.wltoys && direction.startsWith("axes:")) {
