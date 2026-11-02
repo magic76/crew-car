@@ -197,7 +197,7 @@ public final class MainActivity extends Activity {
             }
             @Override public void onError(String message) {
                 visionEnabled = false;
-                if (visionOverlay != null) visionOverlay.setEnabled(false);
+                if (visionOverlay != null) visionOverlay.setVisionEnabled(false);
                 updateVisionButton();
                 android.widget.Toast.makeText(MainActivity.this, message,
                         android.widget.Toast.LENGTH_LONG).show();
@@ -381,7 +381,7 @@ public final class MainActivity extends Activity {
         visionOverlay = new VisionOverlay(this, selected ->
                 log.i("VISION", "user selected visible person box; motors unchanged"));
         cameraFrame.addView(visionOverlay, new FrameLayout.LayoutParams(-1, -1));
-        visionOverlay.setEnabled(false);
+        visionOverlay.setVisionEnabled(false);
         hevcPreview.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
             @Override public void onSurfaceTextureAvailable(SurfaceTexture surface, int w, int h) {
                 fitCameraAspect(w, h);
@@ -1145,7 +1145,7 @@ public final class MainActivity extends Activity {
             visionEnabled = false;
             updateVisionButton();
         }
-        if (visionOverlay != null) visionOverlay.setEnabled(false);
+        if (visionOverlay != null) visionOverlay.setVisionEnabled(false);
         lastCameraFrame = 0;
         lastFrameWidth = 0;
         lastFrameHeight = 0;
@@ -1221,7 +1221,7 @@ public final class MainActivity extends Activity {
 
     private void toggleVision() {
         visionEnabled = !visionEnabled;
-        if (visionOverlay != null) visionOverlay.setEnabled(visionEnabled);
+        if (visionOverlay != null) visionOverlay.setVisionEnabled(visionEnabled);
         crewVision.setEnabled(visionEnabled);
         updateVisionButton();
         log.i("VISION", visionEnabled ?
@@ -1510,7 +1510,7 @@ public final class MainActivity extends Activity {
         main.removeCallbacks(visionSampler);
         if (crewVision != null) crewVision.setEnabled(false);
         visionEnabled = false;
-        if (visionOverlay != null) visionOverlay.setEnabled(false);
+        if (visionOverlay != null) visionOverlay.setVisionEnabled(false);
         updateVisionButton();
         autoStartMicOnReady = false;
         releaseManualInputs();
