@@ -557,9 +557,10 @@ public final class MainActivity extends Activity {
             }
         });
         FrameLayout.LayoutParams stopParams = new FrameLayout.LayoutParams(
-                dp(92), dp(56), Gravity.END | Gravity.BOTTOM);
-        stopParams.rightMargin = dp(8);
-        stopParams.bottomMargin = dp(8);
+                dp(DriveStopGeometry.STOP_WIDTH_DP), dp(DriveStopGeometry.STOP_HEIGHT_DP),
+                Gravity.END | Gravity.BOTTOM);
+        stopParams.rightMargin = dp(DriveStopGeometry.STOP_MARGIN_DP);
+        stopParams.bottomMargin = dp(DriveStopGeometry.STOP_MARGIN_DP);
         cockpit.addView(stopButton, stopParams);
         cockpit.setMotionEventSplittingEnabled(true);
         // Capture the original form sections; preserve every existing input callback.
