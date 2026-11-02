@@ -552,12 +552,12 @@ public final class CarControl {
         // Best-effort neutral redundancy on the SAME persistent WL UDP socket.
         // These cannot preempt an already blocked sender or guarantee car receipt.
         if (target.wltoys && hasStopPayload(target)) {
-            final long requestedAt = now;
+            final long retryScheduledAt = now;
             for (int delay : STOP_RETRY_DELAYS_MS) {
                 io.schedule(() -> {
                     if (motionEpoch.get() == stopEpoch &&
                             "stop".equals(active) &&
-                            SystemClock.elapsedRealtime() - requestedAt < 300) {
+                            SystemClock.elapsedRealtime() - retryScheduledAt < 300) {
                         stopBurstAttempts++;
                         sendInternal("stop", target);
                     }
