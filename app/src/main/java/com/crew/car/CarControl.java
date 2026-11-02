@@ -377,8 +377,9 @@ public final class CarControl {
      * The motor output is gain-capped to 50% of OEM deltas, no reverse.
      */
     public synchronized String beginVisionFollow() {
-        if (!armed || manual || aiHoldActive || visionFollowActive)
-            return "blocked: car must be armed, with no active manual/AI drive";
+        if (!armed || manual || aiHoldActive || visionFollowActive ||
+                !"stop".equals(active))
+            return "blocked: car must be armed and stationary, no manual/AI drive";
         if (!config.wltoys) return "blocked: visual following supports WL only";
         boolean safe;
         try { safe = visionSafetyGate.getAsBoolean(); }
