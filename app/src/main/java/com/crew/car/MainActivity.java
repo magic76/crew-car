@@ -368,8 +368,11 @@ public final class MainActivity extends Activity {
             Button nav = button(categories[i], v -> setSettingsTab(index));
             nav.setTextSize(13);
             nav.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+            nav.setMinHeight(0);
+            nav.setMinimumHeight(0);
+            // Four categories fit short landscape viewports without scrolling the rail.
             settingsNavigation.addView(nav,
-                    new LinearLayout.LayoutParams(-1, dp(47)));
+                    new LinearLayout.LayoutParams(-1, 0, 1f));
             settingsNavButtons[i] = nav;
         }
         settingsShell.setVisibility(View.GONE);
