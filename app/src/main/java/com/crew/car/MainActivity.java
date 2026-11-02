@@ -105,7 +105,7 @@ public final class MainActivity extends Activity {
         @Override public void run() {
             if (!foreground || !control.armed() || (heldSteer == 0 && heldThrottle == 0)) return;
             control.driveManualAxes(heldSteer, heldThrottle);
-            main.postDelayed(this, 120);
+            main.postDelayed(this, 180);
         }
     };
     private final Runnable cameraMonitor = new Runnable() {
@@ -303,7 +303,7 @@ public final class MainActivity extends Activity {
             control.setManual(true);
             String result = control.driveManualAxes(steer, throttle);
             if (result.startsWith("blocked")) log.e("SAFETY", result);
-            else main.postDelayed(manualPulse, 120);
+            else main.postDelayed(manualPulse, 180);
         });
         cockpit.addView(drivePad, new FrameLayout.LayoutParams(-1, -1));
         // Settings are an overlay; the TextureView is not detached or restarted.
