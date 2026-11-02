@@ -211,7 +211,7 @@ public final class MainActivity extends Activity {
                 gemini.liveVideoAgeMs() <= 2500);
         render();
         log.setListener(s -> runOnUiThread(() -> { if (logs != null) logs.setText(s); }));
-        log.i("APP", "Crew Car v0.1.16; manual held throttle + AI local cruise/steer, no vehicle ACK");
+        log.i("APP", "Crew Car v0.1.20; Crew Vision offline detection is display-only; no vehicle ACK");
         routes.diagnostics();
     }
 
