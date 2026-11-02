@@ -117,3 +117,11 @@ In landscape driving mode, **AI 說話** directly connects Gemini Live using the
 The new `set_drive_state` Gemini tool holds steering and throttle for 500–5000 ms in the existing car UDP heartbeat, with independent `keep` fields. The local `get_car_status` and driver HUD expose AI pedal and lease countdown. Any stale camera / Live video, manual priority, lock, Wi-Fi loss, app pause or lease expiry sends neutral STOP (safety gate failure also locks). **Fixed motor command is not measured cruise-control speed:** this car has a camera but no speed/odometry/obstacle sensors.
 
 See [AI voice + pedal lease acceptance](docs/AI_TALK_DRIVE_QA.md).
+
+## v0.1.16: actual held gas for manual control and AI cruise
+
+- **Manual:** a forward/reverse touch is held until the same finger lifts or Android cancels it, not until a slight touch drift. Independent steering can change without releasing the throttle. A 120ms UI keepalive renews a 1.6s fail-safe manual deadline, while the selected 10–100ms UDP transmission loop sends the actual repeated control packet.
+- **AI:** `set_drive_state` can keep pedal + steering for a default 15s / max 30s without repeated Gemini tool calls. A new `steer_car(left/right/center, hold_ms)` changes only steering for a brief 100–2000ms interval and returns to center, leaving gas held **without braking or extending its deadline**. A legacy pulse tool cannot interrupt an active AI cruise. E-STOP, manual priority, camera/Live stale and Wi-Fi loss fail closed.
+- Fixed pedal is NOT measured or guaranteed speed; this camera-only toy does not have a collision/depth/odometry sensor. Only use on clear private ground with direct supervision and physical STOP in reach.
+
+Updated [tool contracts](docs/GEMINI_TOOLS.md) and [regression QA](docs/AI_TALK_DRIVE_QA.md).
