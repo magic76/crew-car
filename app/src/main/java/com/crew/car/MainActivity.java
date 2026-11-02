@@ -674,14 +674,8 @@ public final class MainActivity extends Activity {
      * Gemini, diagnostics.
      */
     private void repartitionSettings(LinearLayout root, int[] cuts) {
-        if (cuts.length != 8 || cuts[7] != root.getChildCount())
+        if (!SettingsSectionRouter.validCuts(cuts, root.getChildCount()))
             throw new IllegalStateException("settings section boundaries changed");
-        int previous = 0;
-        for (int cut : cuts) {
-            if (cut < previous || cut > cuts[7])
-                throw new IllegalStateException("invalid settings section");
-            previous = cut;
-        }
         settingsSections = new LinearLayout[4];
         for (int i = 0; i < settingsSections.length; i++) {
             LinearLayout content = new LinearLayout(this);
