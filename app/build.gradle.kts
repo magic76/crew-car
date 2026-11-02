@@ -72,3 +72,8 @@ val prepareCrewVisionModel by tasks.registering {
     }
 }
 tasks.named("preBuild") { dependsOn(prepareCrewVisionModel) }
+// Ensure asset packaging cannot race against model generation on parallel Gradle builds.
+tasks.configureEach {
+    if (name.startsWith("merge") && name.endsWith("Assets"))
+        dependsOn(prepareCrewVisionModel)
+}
