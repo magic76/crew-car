@@ -8,7 +8,8 @@
 | `get_camera_status` | none | Last received frame age/resolution and camera adapter, NOT computer vision or obstacle sensors |
 | `get_network_status` | none | Android Wi-Fi transport and validated Internet path for Gemini, without claiming the SSID is definitely the car |
 | `drive_car` | `direction` = forward/backward/left/right, `duration_ms` = 100–650 | Queue **one bounded pulse** if explicitly armed, not in manual override, Wi-Fi present and frame fresher than 2.5 seconds |
-| `set_drive_state` | steering=left/right/center/keep, throttle=forward/reverse/neutral/keep, lease_ms=500–5000 | Hold one bounded combined motor state; `keep` carries the matching axis from a still-active AI lease; camera/Live/Wi-Fi checked continuously, expiry sends STOP |
+| `set_drive_state` | steering=left/right/center/keep, throttle=forward/reverse/neutral/keep, lease_ms=500–30000 (default 15000) | Hold one bounded combined motor state; `keep` carries the matching axis from a still-active AI lease; camera/Live/Wi-Fi checked continuously, expiry sends STOP |
+| `steer_car` | direction=left/right/center, hold_ms=100–2000 (default 550) | While AI throttle is active, correct steering briefly without touching gas or extending the cruise timer; return to center automatically |
 | `stop_car` | none | Send STOP even while locked; cannot guarantee packet delivery after a Wi-Fi failure |
 | `lock_car` | none | Disarm motor control and queue STOP; only a user can unlock using the Activity checkbox |
 
@@ -68,6 +69,12 @@ The user's car has **one camera** and remote motor control. There are **no other
 
 ## v0.1.15 half-duplex + persistent AI pedal
 
-The new `set_drive_state` is a *time-limited command state*, not measured vehicle speed or autonomous cruise control. One call keeps periodically sending the same throttle/steering bytes while a 500–5000ms lease is active; no 650ms pulse-repetition tool loop is needed. Expiry, user STOP/interrupt, manual steering takeover, camera/Live stale, Wi-Fi loss, and app pause cancel the lease. See `docs/AI_TALK_DRIVE_QA.md` for exact scenarios.
+The new `set_drive_state` is a *time-limited command state*, not measured vehicle speed or autonomous cruise control. One call keeps periodically sending the same throttle/steering bytes while a 500–30000ms lease is active; no 650ms pulse-repetition tool loop is needed. Expiry, user STOP/interrupt, manual steering takeover, camera/Live stale, Wi-Fi loss, and app pause cancel the lease. See `docs/AI_TALK_DRIVE_QA.md` for exact scenarios.
 
 While Gemini outputs audio, the physical AudioRecord microphone is paused and an audioStreamEnd is sent; it resumes after turnComplete and audio drain. The only deliberate barge-in path is the landscape **打斷 AI** button, which clears playback and sends a clientContent interruption instruction. This is not echo cancellation.
+
+## v0.1.16 persistent input correction
+
+Manual forward/reverse buttons are physical hold controls: a pointer is captured on DOWN and stays active until UP or CANCEL even after thumb drift. The app refreshes the local watchdog every 120ms while pressed; the serial transmitter emits control UDP continuously at the configured 10–100ms period. UI refresh does not create extra network bursts. A stalled UI that cannot renew the 1.6s manual deadman stops the car.
+
+Gemini should use `set_drive_state(steering=center, throttle=forward)` once for normal user-authorized forward movement (default 15s, absolute maximum 30s). Its local sender maintains throttle independently. For key-point turns use `steer_car(direction=left/right, hold_ms=550)`, which briefly turns then re-centers steering while throttle continues; the original motor hold deadline is NOT extended. `set_drive_state(...,throttle=keep)` can also update or latch steering. If `drive_car` is mistakenly called during cruise, it is **blocked without braking** so the AI can switch tools. STOP/lock/E-STOP/manual takeover always cancel cruise. This is NOT actual speed-regulated driving.
