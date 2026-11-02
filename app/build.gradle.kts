@@ -1,3 +1,8 @@
+import java.io.File
+import java.net.URL
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+
 plugins {
     id("com.android.application")
 }
@@ -50,9 +55,9 @@ val prepareCrewVisionModel by tasks.registering {
                 }
         if (!valid(target)) {
             target.parentFile.mkdirs()
-            val temp = java.io.File(target.parentFile, target.name + ".part")
+            val temp = File(target.parentFile, target.name + ".part")
             try {
-                val url = java.net.URL(
+                val url = URL(
                     "https://storage.googleapis.com/mediapipe-models/" +
                     "object_detector/efficientdet_lite0/int8/1/efficientdet_lite0.tflite")
                 val connection = url.openConnection()
@@ -64,8 +69,8 @@ val prepareCrewVisionModel by tasks.registering {
                     }
                 }
                 require(valid(temp)) { "Crew Vision model download invalid; refusing to package an unusable model" }
-                java.nio.file.Files.move(temp.toPath(), target.toPath(),
-                    java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                Files.move(temp.toPath(), target.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING)
             } finally { temp.delete() }
         }
         require(valid(target)) { "Crew Vision detector model unavailable: build requires Internet once" }
