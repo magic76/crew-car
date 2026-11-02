@@ -147,7 +147,8 @@ public final class DualStickDriveView extends View {
     }
 
     private float throttleBottom(float height) {
-        return Math.min(height - dp(76), height - dp(80) + dp(layout.offsetDp));
+        return DriveStopGeometry.throttleBottomPx(
+                height, getResources().getDisplayMetrics().density, layout.offsetDp);
     }
 
     private void drawThrottleButtons(Canvas c, float cx, float side, float height) {
