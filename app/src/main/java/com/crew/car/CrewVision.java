@@ -128,11 +128,14 @@ public final class CrewVision {
                         }
                         if (!person) continue;
                         RectF rect = detection.boundingBox();
-                        float left = Math.max(0f, rect.left / outW);
-                        float top = Math.max(0f, rect.top / outH);
-                        float right = Math.min(1f, rect.right / outW);
-                        float bottom = Math.min(1f, rect.bottom / outH);
-                        if (right <= left || bottom <= top) continue;
+                        float left = Math.max(0f, Math.min(1f, rect.left / outW));
+                        float top = Math.max(0f, Math.min(1f, rect.top / outH));
+                        float right = Math.max(0f, Math.min(1f, rect.right / outW));
+                        float bottom = Math.max(0f, Math.min(1f, rect.bottom / outH));
+                        if (!Float.isFinite(left) || !Float.isFinite(top) ||
+                                !Float.isFinite(right) || !Float.isFinite(bottom) ||
+                                !Float.isFinite(confidence) ||
+                                right <= left || bottom <= top) continue;
                         people.add(new PersonTracker.Box(left, top, right, bottom, confidence));
                     }
                     main.post(() -> {
