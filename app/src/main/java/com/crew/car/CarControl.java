@@ -36,6 +36,8 @@ public final class CarControl {
     private volatile String active = "stop";
     private volatile boolean aiHoldActive;
     private volatile int aiSteer, aiThrottle;
+    /** Expiring steering correction; 0 = latch current direction until explicitly changed. */
+    private volatile long aiSteerReleaseAt;
     private volatile BooleanSupplier aiSafetyGate = () -> false;
     private volatile long lastAiSafetyCheckAt;
     private final AtomicLong motionEpoch = new AtomicLong();
@@ -58,6 +60,16 @@ public final class CarControl {
         io.scheduleAtFixedRate(() -> {
             if (aiHoldActive && armed) {
                 long now = SystemClock.elapsedRealtime();
+                if (aiSteerReleaseAt > 0 && now >= aiSteerReleaseAt) {
+                    aiSteerReleaseAt = 0;
+                    aiSteer = 0;
+                    String command = "axes:0:" + aiThrottle;
+                    if (!command.equals(active)) {
+                        active = command;
+                        sendInternal(command);
+                    }
+                    log.i("AI", "steering correction ended; throttle still held");
+                }
                 if (now >= deadline) {
                     aiHoldActive = false;
                     stopInternal("AI lease expired");
@@ -145,6 +157,7 @@ public final class CarControl {
             throw new IllegalArgumentException("Cannot send WL commands to KL");
         motionEpoch.incrementAndGet();
         aiHoldActive = false;
+        aiSteerReleaseAt = 0;
         boolean stopPrevious = armed || !"stop".equals(active);
         armed = false;
         manual = false;
@@ -190,6 +203,7 @@ public final class CarControl {
 
     public void disarm() {
         aiHoldActive = false;
+        aiSteerReleaseAt = 0;
         boolean stopCurrent = armed || !"stop".equals(active);
         armed = false;
         manual = false;
@@ -217,7 +231,8 @@ public final class CarControl {
             if ("stop".equals(direction)) { emergencyStop(); return "stopped"; }
             if (!armed) return "blocked: control locked";
             if (fromAi && manual) return "blocked: manual priority";
-            if (fromAi && aiHoldActive) emergencyStop(); // one AI control mode at a time
+            if (fromAi && aiHoldActive)
+                return "blocked: throttle is held; use steer_car or set_drive_state with throttle=keep (no brake sent)";
             int ms = Math.max(100, Math.min(fromAi ? 650 : 500, requestedMs));
             final String command = direction;
             final long epoch = motionEpoch.get();
@@ -278,6 +293,7 @@ public final class CarControl {
             }
             aiSteer = steer;
             aiThrottle = gas;
+            aiSteerReleaseAt = 0; // a fresh state cancels previous short-turn timer
             aiHoldActive = true;
             deadline = SystemClock.elapsedRealtime() + leaseMs;
             lastAiSafetyCheckAt = SystemClock.elapsedRealtime();
@@ -290,6 +306,42 @@ public final class CarControl {
         });
         return "queued AI drive lease steering=" + steer + " throttle=" + gas +
                 " expires_in_ms=" + leaseMs + " (no hardware ACK)";
+    }
+
+    /**
+     * Local steering-only correction while the previously authorized AI throttle
+     * remains unchanged. This does NOT extend the overall motor lease.
+     * When the short correction ends, re-center steering but keep gas until lease expiry.
+     */
+    public String steerAi(String direction, int holdMs) {
+        String violation = CarToolPolicy.validateSteer(direction, holdMs);
+        if (violation != null) return violation;
+        if (!aiHoldActive() || !armed) return "blocked: no active AI throttle lease";
+        if (manual) return "blocked: manual priority";
+        final int requested = "left".equals(direction) ? -1 : "right".equals(direction) ? 1 : 0;
+        final long epoch = motionEpoch.get();
+        io.execute(() -> {
+            if (!aiHoldActive() || manual || epoch != motionEpoch.get()) return;
+            boolean safe;
+            try { safe = aiSafetyGate.getAsBoolean(); } catch (Exception ex) { safe = false; }
+            if (!safe) {
+                armed = false;
+                stopInternal("AI steering camera/Live gate stale");
+                return;
+            }
+            aiSteer = requested;
+            aiSteerReleaseAt = requested == 0 ? 0 : SystemClock.elapsedRealtime() + holdMs;
+            String command = "axes:" + requested + ":" + aiThrottle;
+            if (!command.equals(active)) {
+                active = command;
+                sendInternal(command);
+            }
+            log.i("AI", "steering=" + direction + " holdMs=" + holdMs +
+                    " throttle=" + aiThrottle + " unchanged; cruiseDeadlineMs=" +
+                    Math.max(0, deadline - SystemClock.elapsedRealtime()));
+        });
+        return "queued steering=" + direction + " for " + holdMs +
+                "ms; throttle remains held, original cruise deadline unchanged";
     }
 
     /** Manual two-axis input; the OEM profile can encode throttle and steering together. */
@@ -312,7 +364,7 @@ public final class CarControl {
         final long epoch = motionEpoch.get();
         io.execute(() -> {
             if (!armed || motionEpoch.get() != epoch || !manual) return;
-            deadline = SystemClock.elapsedRealtime() + 500;
+            deadline = SystemClock.elapsedRealtime() + 1600;
             if (!command.equals(active)) {
                 active = command;
                 sendInternal(command); // do not duplicate TX on each 180ms UI renewal
@@ -322,6 +374,7 @@ public final class CarControl {
     }
 
     public void emergencyStop() {
+        aiSteerReleaseAt = 0;
         aiHoldActive = false;
         aiSteer = 0;
         aiThrottle = 0;
@@ -338,6 +391,7 @@ public final class CarControl {
 
     private void stopInternal(String reason, Config target) {
         motionEpoch.incrementAndGet(); // invalidate every pending motor command on fail-safe STOP
+        aiSteerReleaseAt = 0;
         aiHoldActive = false;
         aiSteer = 0;
         aiThrottle = 0;
