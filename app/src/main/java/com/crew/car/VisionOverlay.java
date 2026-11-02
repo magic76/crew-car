@@ -30,7 +30,7 @@ public final class VisionOverlay extends View {
         setContentDescription("Crew Vision：點選綠色人物框鎖定目標，不能控制馬達");
     }
 
-    public void setEnabled(boolean value) {
+    public void setVisionEnabled(boolean value) {
         enabled = value;
         tracker.clear();
         invalidate();
