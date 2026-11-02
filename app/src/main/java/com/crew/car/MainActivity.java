@@ -60,9 +60,8 @@ public final class MainActivity extends Activity {
     private volatile int currentCameraAdapter;
     private boolean changingConfig;
     private ScrollView settingsScroller;
-    private View drivingSpacer;
     private Button modeButton;
-    private DrivePadView drivePad;
+    private DualStickDriveView drivePad;
     private boolean drivingMode = true;
     private boolean cameraWanted = true;
     private boolean cameraManualRequested;
@@ -108,7 +107,7 @@ public final class MainActivity extends Activity {
         gemini = new GeminiLive(log);
         render();
         log.setListener(s -> runOnUiThread(() -> { if (logs != null) logs.setText(s); }));
-        log.i("APP", "Crew Car v0.1.8; selectable 10-100ms control interval; TextureView camera; no vehicle ACK");
+        log.i("APP", "Crew Car v0.1.9; landscape twin-thumb control; 10-100ms intervals; no vehicle ACK");
         routes.diagnostics();
     }
 
@@ -166,7 +165,7 @@ public final class MainActivity extends Activity {
         screen.setBackgroundColor(Color.rgb(248, 250, 252));
         setContentView(screen);
         LinearLayout banner = new LinearLayout(this);
-        banner.setPadding(dp(12), dp(6), dp(12), dp(4));
+        banner.setPadding(dp(8), dp(1), dp(8), dp(1));
         banner.setOrientation(LinearLayout.VERTICAL);
         screen.addView(banner);
         LinearLayout topRow = new LinearLayout(this);
@@ -175,24 +174,34 @@ public final class MainActivity extends Activity {
         TextView brand = new TextView(this);
         brand.setText("Crew Car · FPV");
         brand.setTextColor(Color.rgb(22, 32, 46));
-        brand.setTextSize(20);
+        brand.setTextSize(17);
         brand.setTypeface(null, Typeface.BOLD);
-        topRow.addView(brand, new LinearLayout.LayoutParams(0, dp(50), 1));
+        topRow.addView(brand, new LinearLayout.LayoutParams(0, dp(38), 1));
         Button retryCamera = button("重連鏡頭", v -> reconnectCamera());
         retryCamera.setTextSize(12);
-        topRow.addView(retryCamera, new LinearLayout.LayoutParams(dp(89), dp(50)));
+        topRow.addView(retryCamera, new LinearLayout.LayoutParams(dp(84), dp(38)));
         modeButton = button("設定", v -> toggleMode());
-        topRow.addView(modeButton, new LinearLayout.LayoutParams(dp(76), dp(50)));
+        topRow.addView(modeButton, new LinearLayout.LayoutParams(dp(76), dp(38)));
         banner.addView(topRow);
-        netStatus = label(banner, "檢查網路中…", 12);
-        cameraStatus = label(banner, "攝影機未連線", 12);
-        driverLiveStatus = label(banner, "Gemini Live：尚未連線", 12);
+        netStatus = label(banner, "檢查網路中…", 11);
+        cameraStatus = label(banner, "攝影機未連線", 11);
+        driverLiveStatus = label(banner, "Gemini Live：尚未連線", 11);
+        for (TextView status : new TextView[]{netStatus, cameraStatus, driverLiveStatus}) {
+            status.setSingleLine(true);
+            status.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            status.setPadding(0, 0, 0, 0);
+        }
 
+        FrameLayout cockpit = new FrameLayout(this);
+        cockpit.setBackgroundColor(Color.rgb(12, 20, 32));
+        screen.addView(cockpit, new LinearLayout.LayoutParams(-1, 0, 1));
         FrameLayout cameraFrame = new FrameLayout(this);
         cameraFrame.setBackgroundColor(Color.rgb(22, 32, 46));
-        int width = getResources().getDisplayMetrics().widthPixels - dp(24);
-        screen.addView(cameraFrame, new LinearLayout.LayoutParams(-1,
-                Math.max(dp(160), Math.min(dp(290), width * 9 / 16))));
+        int videoWidth = Math.round(getResources().getDisplayMetrics().widthPixels *
+                (1f - 2f * DualStickInput.SIDE_FRACTION));
+        cockpit.addView(cameraFrame,
+                new FrameLayout.LayoutParams(videoWidth, -1, Gravity.CENTER));
+
         preview = new ImageView(this);
         preview.setBackgroundColor(Color.rgb(22, 32, 46));
         preview.setScaleType(ImageView.ScaleType.FIT_CENTER);
@@ -226,17 +235,40 @@ public final class MainActivity extends Activity {
         root.setPadding(dp(16), dp(15), dp(16), dp(32));
         root.setBackgroundColor(Color.rgb(248, 250, 252));
         settingsScroller.addView(root);
-        screen.addView(settingsScroller, new LinearLayout.LayoutParams(-1, 0, 1));
-        drivingSpacer = new View(this);
-        screen.addView(drivingSpacer, new LinearLayout.LayoutParams(-1, 0, 1));
+        settingsScroller.setVisibility(View.GONE);
+        // This single view owns BOTH touch pointers; no two-button multi-touch conflicts.
+        drivePad = new DualStickDriveView(this, (steer, throttle) -> {
+            heldSteer = steer;
+            heldThrottle = throttle;
+            main.removeCallbacks(manualPulse);
+            if (steer == 0 && throttle == 0) {
+                control.setManual(false);
+                control.emergencyStop();
+                return;
+            }
+            if (!control.armed()) {
+                drivePad.cancelInput();
+                log.e("SAFETY", "dual-stick input blocked: locked");
+                return;
+            }
+            control.setManual(true);
+            String result = control.driveManualAxes(steer, throttle);
+            if (result.startsWith("blocked")) log.e("SAFETY", result);
+            else main.postDelayed(manualPulse, 180);
+        });
+        cockpit.addView(drivePad, new FrameLayout.LayoutParams(-1, -1));
+        // Settings are an overlay; the TextureView is not detached or restarted.
+        cockpit.addView(settingsScroller, new FrameLayout.LayoutParams(-1, -1));
+
         LinearLayout driveConsole = new LinearLayout(this);
-        driveConsole.setOrientation(LinearLayout.VERTICAL);
-        driveConsole.setPadding(dp(12), dp(6), dp(12), dp(8));
+        driveConsole.setOrientation(LinearLayout.HORIZONTAL);
+        driveConsole.setGravity(Gravity.CENTER_VERTICAL);
+        driveConsole.setPadding(dp(8), dp(2), dp(8), dp(2));
         driveConsole.setBackgroundColor(Color.rgb(232, 239, 246));
-        screen.addView(driveConsole, new LinearLayout.LayoutParams(-1, -2));
+        screen.addView(driveConsole, new LinearLayout.LayoutParams(-1, dp(62)));
         TextView heading = label(root, "進階設定與除錯", 17);
         heading.setTypeface(null, Typeface.BOLD);
-        label(root, "FPV 與駕駛控制固定顯示；此區為設定、Gemini 與 Debug。", 13);
+        label(root, "橫向駕駛：左手左右轉向、右手前進倒車；兩指可同時操作。進入設定時會先停車上鎖。", 13);
         row(root, button("開 Wi-Fi 設定", v -> startActivity(new Intent(Settings.ACTION_WIFI_SETTINGS))),
                 button("網路診斷", v -> {
                     routes.diagnostics();
@@ -376,9 +408,9 @@ public final class MainActivity extends Activity {
                 }), button("立即停止", v -> emergencyStopAndLock()));
 
         arm = new CheckBox(this);
-        arm.setText("解鎖手動控制／AI 短距離指令（先清空周圍，確認車輪懸空測試）");
+        arm.setText("解鎖駕駛");
         arm.setTextSize(13);
-        driveConsole.addView(arm);
+        driveConsole.addView(arm, new LinearLayout.LayoutParams(dp(126), -1));
         arm.setOnCheckedChangeListener((view, checked) -> {
             if (changingConfig) return;
             if (checked) {
@@ -399,32 +431,16 @@ public final class MainActivity extends Activity {
         });
         label(root, "按住移動；所有方向鍵放開才送 STOP。斷訊 / 逾時也會嘗試送 STOP；未收到車輛 ACK。", 12);
 
-        Button stopButton = button("■ 緊急停止 · 停止後上鎖", v -> emergencyStopAndLock());
+        Button stopButton = button("■ 急停 STOP · 上鎖", v -> emergencyStopAndLock());
         stopButton.setTextColor(Color.WHITE);
         stopButton.setBackgroundTintList(android.content.res.ColorStateList.valueOf(Color.rgb(177, 36, 42)));
         stopButton.setTextSize(16);
-        driveConsole.addView(stopButton, new LinearLayout.LayoutParams(-1, dp(52)));
-        drivePad = new DrivePadView(this, (steer, throttle) -> {
-            heldSteer = steer;
-            heldThrottle = throttle;
-            main.removeCallbacks(manualPulse);
-            if (steer == 0 && throttle == 0) {
-                control.setManual(false);
-                control.emergencyStop();
-                return;
-            }
-            if (!control.armed()) {
-                drivePad.cancelInput();
-                log.e("SAFETY", "driving pad blocked: locked");
-                return;
-            }
-            control.setManual(true);
-            String result = control.driveManualAxes(steer, throttle);
-            if (result.startsWith("blocked")) log.e("SAFETY", result);
-            else main.postDelayed(manualPulse, 180);
-        });
-        driveConsole.addView(drivePad, new LinearLayout.LayoutParams(-1, dp(188)));
-        tuningActive = label(driveConsole, "控制基準：50ms｜轉向100%｜油門100%", 12);
+        driveConsole.addView(stopButton, new LinearLayout.LayoutParams(0, dp(54), 1.4f));
+        tuningActive = label(driveConsole, "50ms｜轉向100%｜油門100%", 11);
+        tuningActive.setSingleLine(false);
+        tuningActive.setGravity(Gravity.CENTER_VERTICAL);
+        tuningActive.setPadding(dp(6), 0, 0, 0);
+        tuningActive.setLayoutParams(new LinearLayout.LayoutParams(dp(190), -1));
 
         label(root, "3. Gemini 3.8 Live（手機麥克風 + 車頭畫面）", 17).setTypeface(null, Typeface.BOLD);
         label(root, "使用自己的 API Key；只放在記憶體，不寫入設定與 Log。連小車 Wi-Fi 時請保持行動數據。", 12);
@@ -508,22 +524,24 @@ public final class MainActivity extends Activity {
         if (txDiagnostics != null) txDiagnostics.setText("本機封包診斷：" + control.diagnosticSummary());
         if (tuningActive != null) {
             CarTuning active = control.tuning();
-            tuningActive.setText("已套用：" + active.intervalMs + "ms｜轉向" +
+            tuningActive.setText(active.intervalMs + "ms｜轉向" +
                     active.steeringPercent + "%｜油門" + active.throttlePercent +
-                    "%（不代表實際車速）");
+                    "%\n（本機設定）");
         }
     }
 
     private void toggleMode() {
+        // Opening settings must never leave a motor command running behind the overlay.
+        if (drivingMode) emergencyStopAndLock();
         drivingMode = !drivingMode;
         updateMode();
     }
 
     private void updateMode() {
-        if (settingsScroller == null || drivingSpacer == null || modeButton == null) return;
+        if (settingsScroller == null || drivePad == null || modeButton == null) return;
+        drivePad.setVisibility(drivingMode ? View.VISIBLE : View.GONE);
         settingsScroller.setVisibility(drivingMode ? View.GONE : View.VISIBLE);
-        drivingSpacer.setVisibility(drivingMode ? View.VISIBLE : View.GONE);
-        modeButton.setText(drivingMode ? "設定／診斷" : "返回駕駛");
+        modeButton.setText(drivingMode ? "設定" : "返回駕駛");
     }
 
     private void updateNetworkStatus() {
