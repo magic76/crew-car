@@ -211,6 +211,14 @@ public final class MainActivity extends Activity {
                         log.i("FOLLOW", "selected person lost; STOP");
                     } else {
                         VisionFollowPlanner.Step step = VisionFollowPlanner.decide(target);
+                        if (!step.moving()) {
+                            // One visual risk condition ends the entire session.
+                            // Never resume on its own when the person appears smaller again.
+                            control.stopVisionFollow();
+                            updateFollowButton();
+                            log.i("FOLLOW", step.reason + " — session cancelled; STOP");
+                            return;
+                        }
                         String result = control.driveVisionAxes(
                                 step.steer, step.throttle, frameAt);
                         if (SystemClock.elapsedRealtime() - followLastLogAt >= 1200) {
