@@ -180,7 +180,8 @@ public final class MainActivity extends Activity {
         crewVision = new CrewVision(this, new CrewVision.Listener() {
             @Override public void onPeople(java.util.List<PersonTracker.Box> people,
                                             long frameAt, long inferMs) {
-                if (!visionEnabled || !foreground || visionOverlay == null) return;
+                if (!visionEnabled || !foreground || !cameraRunning ||
+                        visionOverlay == null) return;
                 float aspect = lastFrameWidth > 0 && lastFrameHeight > 0 ?
                         lastFrameWidth / (float) lastFrameHeight : 16f / 9f;
                 if (currentCameraAdapter == 0 && hevcPreview != null &&
