@@ -40,6 +40,7 @@ public final class GeminiLive {
         void onStatus(String value);
         String onDrive(String direction, int milliseconds);
         String onDriveState(String steering, String throttle, int leaseMs);
+        String onSteer(String direction, int holdMs);
         void onSpeechState(boolean speaking);
         void onStop();
         void onLock();
@@ -232,13 +233,15 @@ public final class GeminiLive {
         try {
             String instruction = "你是 Crew Car 的繁體中文語音助手。你可以看到低頻率車頭影像，也可聽使用者說話。" +
                     "可用工具：get_car_status 查本機與 AI 油門保持狀態、get_camera_status 查鏡頭、get_network_status 查網路、stop_car 急停、lock_car 鎖車、drive_car 短促移動、set_drive_state 保持油門與方向。" +
-                    "set_drive_state 的 throttle=forward 表示持續踩油門直到 lease_ms 到期（最長 5000 毫秒）；要一邊保持前進一邊左轉，下一次設定 throttle=keep、steering=left。向右同理，steering=center 回正，throttle=neutral 放開油門。" +
-                    "每次 lease 到期都會停車；不得假裝車子會永遠前進或自行駕駛。" +
+                    "set_drive_state 是本機自動保持並週期送出的油門/方向狀態，不是只送一次。說往前一直開，請先呼叫 steering=center,throttle=forward,lease_ms=15000；小車會自動持續送封包，不需要每 650ms 再送一次。" +
+                    "接下來只在需要調整方向時呼叫 steer_car(direction=left/right/center,hold_ms=550)，它只短暫轉向，持續保留前進/倒車油門，不重新踩剎車也不延長巡航期限。" +
+                    "如果要長時間維持左右轉向，呼叫 set_drive_state(steering=left/right,throttle=keep)，絕不使用 drive_car 的 left/right 來取代持續前進。" +
+                    "一次巡航預設 15000ms、最多 30000ms；本機到期或影像過期會自動 STOP，不可能無期限自駕。使用者說停、切換倒車、手動接管時按指令立即處理。" +
                     "硬體只有車頭攝影機，沒有超音波、雷達、碰撞、GPS、里程計或電量遙測等其他感測器。" +
                     "你只能從傳入的即時畫面描述可見物體和大致方向；無法測量真實距離、車速、位置、實際轉角或是否已成功移動。" +
                     "get_camera_status 只讀取畫面接收與 Live 傳送狀態，不包含畫面內容；不要把它誤當避障感測器。" +
                     "先用只讀工具回答車況，不能編造電池量、位置、距離、實際移動、障礙物偵測或感測器資料。" +
-                    "只有使用者明確要求移動，才使用 drive_car（100–650ms）或 set_drive_state（500–5000ms）；不得自行追人、追車或規劃自主導航。" +
+                    "只有使用者明確要求移動，才使用 drive_car（100–650ms）、set_drive_state（500–30000ms），有保持狀態時可用 steer_car（100–2000ms）；不得自行追人、追車或規劃自主導航。" +
                     "若鏡頭未更新、看不清路況、看見人或障礙物、或指令不明確，請停止並詢問。" +
                     "工具回傳 queued 只代表移動已排入本機佇列；TX 成功也不代表小車回覆或真正移動，絕對不可宣稱完成移動。" +
                     "stop_car 和 lock_car 可隨時呼叫；只有人類可以在手機介面重新解鎖。" +
@@ -412,7 +415,7 @@ public final class GeminiLive {
                     JSONObject result;
                     try {
                         if (safetyOverride && ("drive_car".equals(name) ||
-                                "set_drive_state".equals(name))) {
+                                "set_drive_state".equals(name) || "steer_car".equals(name))) {
                             result = toolStatus("blocked", "STOP/lock in same tool batch takes priority");
                         } else {
                             result = executeTool(name, call.optJSONObject("args"));
@@ -473,7 +476,8 @@ public final class GeminiLive {
             case "set_drive_state": {
                 String steering = args == null ? "" : args.optString("steering", "");
                 String throttle = args == null ? "" : args.optString("throttle", "");
-                int lease = args == null ? -1 : args.optInt("lease_ms", -1);
+                int lease = args == null ? CarToolPolicy.DEFAULT_HOLD_MS :
+                        args.optInt("lease_ms", CarToolPolicy.DEFAULT_HOLD_MS);
                 String violation = CarToolPolicy.validateHold(steering, throttle, lease);
                 if (violation != null) return toolStatus("blocked", violation);
                 String result = listener.onDriveState(steering, throttle, lease);
@@ -483,6 +487,19 @@ public final class GeminiLive {
                         .put("lease_ms", lease)
                         .put("device_acknowledged", false)
                         .put("motion_verified", false);
+            }
+            case "steer_car": {
+                String direction = args == null ? "" : args.optString("direction", "");
+                int hold = args == null ? 550 : args.optInt("hold_ms", 550);
+                String violation = CarToolPolicy.validateSteer(direction, hold);
+                if (violation != null) return toolStatus("blocked", violation);
+                String result = listener.onSteer(direction, hold);
+                boolean blocked = result == null || result.startsWith("blocked");
+                return toolStatus(blocked ? "blocked" : "queued",
+                        result == null ? "no result" : result)
+                        .put("throttle_preserved", !blocked)
+                        .put("vehicle_speed_measured", false)
+                        .put("device_acknowledged", false);
             }
             case "stop_car":
                 listener.onStop();
