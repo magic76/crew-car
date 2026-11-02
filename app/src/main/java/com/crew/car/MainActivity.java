@@ -11,7 +11,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.net.Network;
-import android.view.SurfaceHolder;
+import android.graphics.SurfaceTexture;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.provider.Settings;
@@ -23,7 +23,7 @@ import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.ImageView;
-import android.view.SurfaceView;
+import android.view.TextureView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Spinner;
@@ -52,7 +52,7 @@ public final class MainActivity extends Activity {
     private TextView tuningPreview, tuningActive, txDiagnostics;
     private TextView netStatus, cameraStatus, liveStatus, driverLiveStatus, transcript, logs;
     private ImageView preview;
-    private SurfaceView hevcPreview;
+    private TextureView hevcPreview;
     private CheckBox arm;
     private volatile long lastCameraFrame;
     private volatile int lastFrameWidth;
@@ -108,7 +108,7 @@ public final class MainActivity extends Activity {
         gemini = new GeminiLive(log);
         render();
         log.setListener(s -> runOnUiThread(() -> { if (logs != null) logs.setText(s); }));
-        log.i("APP", "Crew Car v0.1.5; chosen launcher icon and driving polish; no vehicle ACK");
+        log.i("APP", "Crew Car v0.1.8; selectable 10-100ms control interval; TextureView camera; no vehicle ACK");
         routes.diagnostics();
     }
 
@@ -189,6 +189,7 @@ public final class MainActivity extends Activity {
         driverLiveStatus = label(banner, "Gemini Live：尚未連線", 12);
 
         FrameLayout cameraFrame = new FrameLayout(this);
+        cameraFrame.setBackgroundColor(Color.rgb(22, 32, 46));
         int width = getResources().getDisplayMetrics().widthPixels - dp(24);
         screen.addView(cameraFrame, new LinearLayout.LayoutParams(-1,
                 Math.max(dp(160), Math.min(dp(290), width * 9 / 16))));
@@ -196,25 +197,26 @@ public final class MainActivity extends Activity {
         preview.setBackgroundColor(Color.rgb(22, 32, 46));
         preview.setScaleType(ImageView.ScaleType.FIT_CENTER);
         cameraFrame.addView(preview, new FrameLayout.LayoutParams(-1, -1));
-        hevcPreview = new SurfaceView(this);
-        hevcPreview.setBackgroundColor(Color.rgb(22, 32, 46));
+        hevcPreview = new TextureView(this);
         cameraFrame.addView(hevcPreview, new FrameLayout.LayoutParams(-1, -1));
-        hevcPreview.getHolder().addCallback(new SurfaceHolder.Callback() {
-            @Override public void surfaceCreated(SurfaceHolder holder) {
-                log.i("CAM", "SurfaceView created; camera can start");
+        hevcPreview.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
+            @Override public void onSurfaceTextureAvailable(SurfaceTexture surface, int w, int h) {
+                log.i("CAM", "TextureView available; camera can start");
                 maybeStartCamera();
             }
-            @Override public void surfaceChanged(SurfaceHolder holder, int format, int w, int h) {
-                log.i("CAM", "Surface size=" + w + "x" + h);
+            @Override public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int w, int h) {
+                log.i("CAM", "TextureView size=" + w + "x" + h);
             }
-            @Override public void surfaceDestroyed(SurfaceHolder holder) {
-                log.i("CAM", "SurfaceView destroyed; suspending camera");
+            @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) {
+                log.i("CAM", "TextureView destroyed; suspending camera");
                 if (currentCameraAdapter == 0) {
                     stopCameraReceiver();
                     if (control != null) control.disarm();
                     if (arm != null) uncheck();
                 }
+                return true;
             }
+            @Override public void onSurfaceTextureUpdated(SurfaceTexture surface) {}
         });
 
         settingsScroller = new ScrollView(this);
@@ -250,7 +252,7 @@ public final class MainActivity extends Activity {
         root.addView(cameraAdapter);
         cameraUrl = field(root, "HTTP 模式才需填影像 URL",
                 saved("camera_url", ""), false);
-        label(root, "6405 使用 UDP H.265；若黑畫面，查看收包／組幀／解碼數。", 12);
+        label(root, "6405 使用 UDP H.265；若黑畫面，查看收包／組幀／解碼數及 TextureView 像素亮度。", 12);
         preview.setVisibility(cameraAdapter.getSelectedItemPosition() == 0 ? View.GONE : View.VISIBLE);
         hevcPreview.setVisibility(cameraAdapter.getSelectedItemPosition() == 0 ? View.VISIBLE : View.GONE);
         cameraAdapter.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
@@ -294,21 +296,26 @@ public final class MainActivity extends Activity {
         });
         label(root, "操控調校｜預設與實際週期", 17)
                 .setTypeface(null, Typeface.BOLD);
-        label(root, "控制週期越短不一定越順。先以原廠 50ms 為基準；降低油門／轉向幅度可減少突兀感。", 12);
+        label(root, "週期越短，重複封包越密；原廠基準為 50ms。30／20／10ms 是頻率實驗值，測試時請架空車輪。", 12);
         tuningPreset = new Spinner(this);
         tuningPreset.setAdapter(new ArrayAdapter<>(this,
                 android.R.layout.simple_spinner_dropdown_item,
                 new String[]{"柔和｜50ms・轉向65%・油門60%",
                         "原廠基準｜50ms・全部100%",
                         "省封包｜70ms・全部75%",
-                        "靈敏實驗｜40ms・全部100%"}));
+                        "靈敏實驗｜40ms・全部100%",
+                        "頻率實驗｜30ms（保持幅度）",
+                        "頻率實驗｜20ms（保持幅度）",
+                        "頻率實驗｜10ms（保持幅度）"}));
         tuningPreset.setSelection(getPreferences(MODE_PRIVATE).getInt("tuning_preset", 1));
         root.addView(tuningPreset);
         int savedPeriod = getPreferences(MODE_PRIVATE).getInt("tuning_interval", 50);
         int savedSteer = getPreferences(MODE_PRIVATE).getInt("tuning_steer", 100);
         int savedThrottle = getPreferences(MODE_PRIVATE).getInt("tuning_throttle", 100);
-        tuningPeriod = tuningBar(root, "控制傳送週期（40–100ms，每格10ms）",
-                6, (savedPeriod - 40) / 10);
+        tuningPeriod = tuningBar(root, "控制傳送週期（10–100ms，每格10ms）",
+                (CarTuning.MAX_INTERVAL_MS - CarTuning.MIN_INTERVAL_MS) /
+                        CarTuning.INTERVAL_STEP_MS,
+                (savedPeriod - CarTuning.MIN_INTERVAL_MS) / CarTuning.INTERVAL_STEP_MS);
         tuningSteer = tuningBar(root, "轉向幅度（50–100%，每格5%）",
                 10, (savedSteer - 50) / 5);
         tuningThrottle = tuningBar(root, "油門幅度（50–100%，每格5%）",
@@ -320,9 +327,12 @@ public final class MainActivity extends Activity {
                                                  View view, int index, long id) {
                 if (first) { first = false; updateTuningPreview(); return; }
                 CarTuning t = CarTuning.preset(index);
-                tuningPeriod.setProgress((t.intervalMs - 40) / 10);
-                tuningSteer.setProgress((t.steeringPercent - 50) / 5);
-                tuningThrottle.setProgress((t.throttlePercent - 50) / 5);
+                tuningPeriod.setProgress((t.intervalMs - CarTuning.MIN_INTERVAL_MS) /
+                        CarTuning.INTERVAL_STEP_MS);
+                if (index <= 3) {
+                    tuningSteer.setProgress((t.steeringPercent - 50) / 5);
+                    tuningThrottle.setProgress((t.throttlePercent - 50) / 5);
+                }
                 updateTuningPreview();
             }
             @Override public void onNothingSelected(android.widget.AdapterView<?> parent) {}
@@ -338,7 +348,8 @@ public final class MainActivity extends Activity {
                 }),
                 button("恢復原廠基準", v -> {
                     tuningPreset.setSelection(1);
-                    tuningPeriod.setProgress(1);
+                    tuningPeriod.setProgress((CarTuning.OEM.intervalMs - CarTuning.MIN_INTERVAL_MS) /
+                            CarTuning.INTERVAL_STEP_MS);
                     tuningSteer.setProgress(10);
                     tuningThrottle.setProgress(10);
                     updateTuningPreview();
@@ -473,7 +484,8 @@ public final class MainActivity extends Activity {
     }
 
     private CarTuning selectedTuning() {
-        return new CarTuning(40 + tuningPeriod.getProgress() * 10,
+        return new CarTuning(CarTuning.MIN_INTERVAL_MS +
+                tuningPeriod.getProgress() * CarTuning.INTERVAL_STEP_MS,
                 50 + tuningSteer.getProgress() * 5,
                 50 + tuningThrottle.getProgress() * 5);
     }
@@ -583,8 +595,8 @@ public final class MainActivity extends Activity {
             return;
         }
         if (cameraAdapter.getSelectedItemPosition() == 0 &&
-                !hevcPreview.getHolder().getSurface().isValid()) {
-            cameraStatus.setText("等待 FPV 畫面 Surface 就緒…");
+                !hevcPreview.isAvailable()) {
+            cameraStatus.setText("等待 FPV 畫面 TextureView 就緒…");
             return;
         }
         cameraRunning = true;
@@ -628,7 +640,7 @@ public final class MainActivity extends Activity {
                 lastCameraFrame = SystemClock.elapsedRealtime();
                 gemini.frame(frame);
                 cameraStatus.setText("HEVC " + frame.getWidth() + "×" + frame.getHeight() +
-                        "｜新畫面已接收");
+                        "｜TextureView 畫面；像素亮度見 Debug");
             }, status -> {
                 if (foreground && token == cameraSession && cameraStatus != null)
                     cameraStatus.setText(status);

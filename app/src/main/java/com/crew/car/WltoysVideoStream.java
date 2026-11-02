@@ -4,11 +4,12 @@ import android.graphics.Bitmap;
 import android.media.MediaCodec;
 import android.media.MediaFormat;
 import android.net.Network;
+import android.graphics.SurfaceTexture;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
-import android.view.PixelCopy;
-import android.view.SurfaceView;
+import android.view.Surface;
+import android.view.TextureView;
 
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
@@ -40,7 +41,7 @@ public final class WltoysVideoStream {
 
     public boolean isRunning() { return running; }
 
-    public synchronized void start(String host, SurfaceView view, Consumer<Bitmap> frameCallback,
+    public synchronized void start(String host, TextureView view, Consumer<Bitmap> frameCallback,
                                    Consumer<String> statusCallback) {
         stop();
         if (host == null || host.isBlank()) {
@@ -48,20 +49,23 @@ public final class WltoysVideoStream {
             publishStatus(statusCallback, sessionId, "攝影機 IP 未設定");
             return;
         }
-        if (!view.getHolder().getSurface().isValid()) {
-            log.e("HEVC", "Surface not ready; retry after camera view is visible");
+        SurfaceTexture texture = view.isAvailable() ? view.getSurfaceTexture() : null;
+        if (texture == null) {
+            log.e("HEVC", "TextureView not ready; retry after camera view is visible");
             publishStatus(statusCallback, sessionId, "畫面元件尚未就緒；請回到攝影機區再連線");
             return;
         }
+        Surface outputSurface = new Surface(texture);
         long token = ++sessionId;
         running = true;
         copying.set(false);
         publishStatus(statusCallback, token, "啟動 HEVC 解碼器…");
-        worker = new Thread(() -> receive(host, view, frameCallback, statusCallback, token), "CrewCar-HEVC");
+        worker = new Thread(() -> receive(host, view, outputSurface, frameCallback, statusCallback, token),
+                "CrewCar-HEVC");
         worker.start();
     }
 
-    private void receive(String host, SurfaceView view, Consumer<Bitmap> frameCallback,
+    private void receive(String host, TextureView view, Surface outputSurface, Consumer<Bitmap> frameCallback,
                          Consumer<String> statusCallback, long token) {
         MediaCodec decoder = null;
         DatagramSocket dataSocket = null;
@@ -79,7 +83,7 @@ public final class WltoysVideoStream {
             if (wifi == null) throw new IllegalStateException("car Wi-Fi not connected");
             decoder = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_HEVC);
             MediaFormat format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_HEVC, 1280, 720);
-            decoder.configure(format, view.getHolder().getSurface(), null, 0);
+            decoder.configure(format, outputSurface, null, 0);
             decoder.start();
             log.i("HEVC", "Android MediaCodec decoder started");
             publishStatus(statusCallback, token, "解碼器就緒，準備聽 UDP 1234…");
@@ -140,6 +144,11 @@ public final class WltoysVideoStream {
                         if (output >= 0) {
                             decoder.releaseOutputBuffer(output, true);
                             decoded++;
+                            if (decoded <= 5 || decoded % 120 == 0) {
+                                log.i("HEVC", "decoder output #" + decoded + " size=" +
+                                        outputInfo.size + " flags=" + outputInfo.flags +
+                                        " ptsUs=" + outputInfo.presentationTimeUs);
+                            }
                             long now = SystemClock.elapsedRealtime();
                             if (now >= nextCopy && copying.compareAndSet(false, true)) {
                                 nextCopy = now + 1000;
@@ -182,6 +191,7 @@ public final class WltoysVideoStream {
                 try { decoder.stop(); } catch (Exception ignored) {}
                 decoder.release();
             }
+            outputSurface.release();
             log.i("HEVC", "closed packets=" + packets + " frames=" + frames +
                     " decoded=" + decoded + " dropped=" + dropped);
             if (error != null) publishStatus(statusCallback, token, "攝影機停止：" + error);
@@ -203,38 +213,66 @@ public final class WltoysVideoStream {
         });
     }
 
-    /** PixelCopy obtains a real rendered frame, not a stale encoded-buffer placeholder. */
-    private void capture(SurfaceView view, Consumer<Bitmap> callback,
+    /** TextureView returns the rendered frame through Android's normal view composition. */
+    private void capture(TextureView view, Consumer<Bitmap> callback,
                          Consumer<String> statusCallback, long token) {
         main.post(() -> {
-            if (!running || token != sessionId || view.getWidth() <= 0 || view.getHeight() <= 0 ||
-                    !view.getHolder().getSurface().isValid()) {
+            if (!running || token != sessionId || !view.isAvailable() ||
+                    view.getWidth() <= 0 || view.getHeight() <= 0) {
                 copying.set(false);
                 return;
             }
             int targetW = Math.max(1, Math.min(512, view.getWidth()));
             int targetH = Math.max(1, view.getHeight() * targetW / Math.max(1, view.getWidth()));
-            Bitmap bitmap = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888);
             try {
-                PixelCopy.request(view, bitmap, result -> {
-                    copying.set(false);
-                    if (running && token == sessionId && result == PixelCopy.SUCCESS) {
-                        callback.accept(bitmap);
-                    } else {
-                        bitmap.recycle();
-                        if (result != PixelCopy.SUCCESS) {
-                            String message = "PixelCopy 取畫面失敗，result=" + result;
-                            log.e("HEVC", message);
-                            publishStatus(statusCallback, token, message);
-                        }
-                    }
-                }, main);
+                Bitmap bitmap = view.getBitmap(targetW, targetH);
+                copying.set(false);
+                if (bitmap != null && running && token == sessionId) {
+                    log.i("HEVC", pixelStats(bitmap));
+                    callback.accept(bitmap);
+                } else if (bitmap != null) {
+                    bitmap.recycle();
+                } else {
+                    String message = "TextureView 尚未提供可讀取的畫面";
+                    log.e("HEVC", message);
+                    publishStatus(statusCallback, token, message);
+                }
             } catch (Exception e) {
                 copying.set(false);
-                bitmap.recycle();
-                log.e("HEVC", "PixelCopy failed " + e.getClass().getSimpleName());
+                log.e("HEVC", "TextureView capture failed " + e.getClass().getSimpleName());
             }
         });
+    }
+
+    /** Sample captured TextureView pixels to detect an all-black image. */
+    private String pixelStats(Bitmap bitmap) {
+        int width = bitmap.getWidth();
+        int height = bitmap.getHeight();
+        int stepX = Math.max(1, width / 32);
+        int stepY = Math.max(1, height / 32);
+        long total = 0;
+        int samples = 0;
+        int nonDark = 0;
+        int min = 255;
+        int max = 0;
+        for (int y = 0; y < height; y += stepY) {
+            for (int x = 0; x < width; x += stepX) {
+                int pixel = bitmap.getPixel(x, y);
+                int red = (pixel >>> 16) & 0xff;
+                int green = (pixel >>> 8) & 0xff;
+                int blue = pixel & 0xff;
+                int luma = (red * 299 + green * 587 + blue * 114) / 1000;
+                total += luma;
+                samples++;
+                if (luma > 16) nonDark++;
+                min = Math.min(min, luma);
+                max = Math.max(max, luma);
+            }
+        }
+        int average = samples == 0 ? 0 : (int) (total / samples);
+        int percent = samples == 0 ? 0 : nonDark * 100 / samples;
+        return "TextureView sample=" + width + "x" + height + " avgLuma=" + average +
+                " range=" + min + ".." + max + " nonDark=" + percent + "%";
     }
 
     public synchronized void stop() {
