@@ -36,13 +36,17 @@ public final class DualStickInputTest {
         DualStickInput s = new DualStickInput();
         s.down(1, 10, 200, W, H);
         s.move(1, 999, 0, W, H);
-        assertEquals(1, s.steering());
+        assertEquals(0, s.steering()); // left thumb leaves its zone, steer centers
         assertEquals(0, s.throttle());
         s.down(2, 900, 360, W, H);
         assertEquals(-1, s.throttle());
         s.move(2, 0, 0, W, H);
-        assertEquals(1, s.throttle());
-        assertEquals(1, s.steering()); // the left pointer still owns steering
+        assertEquals(0, s.throttle()); // right thumb left its zone, no forward drive
+        assertEquals(0, s.steering());
+        s.move(1, 240, 150, W, H);
+        assertEquals(1, s.steering()); // the left thumb still owns steering
+        s.move(2, 900, 10, W, H);
+        assertEquals(1, s.throttle()); // the right thumb still owns throttle
     }
 
     @Test public void centerTouchesDoNotTriggerMotion() {
