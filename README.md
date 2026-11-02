@@ -153,3 +153,15 @@ The driving header is now inset from system status/nav bars, edge cutouts and th
 **Unchanged:** car motor and packet code, 180ms manual loop, 500ms deadman, steering/throttle controls, AI tools, camera stream, vehicle profiles and BYOK secret storage.
 
 [Landscape settings / Samsung safe-area QA](docs/LANDSCAPE_SETTINGS_INSETS_QA.md).
+
+## v0.1.20 — Crew Vision: offline person boxes + explicit target selection
+
+The landscape driving header has a new **辨識** toggle. When enabled, an optional on-device MediaPipe EfficientDet-Lite0 (COCO person) task draws bounding boxes in the center FPV image. Tap a person box to select it; nearby detections can be visually matched across frames. The lock is deliberately **fail-closed**: after lost target / stale frames, the app displays "目標遺失" and will **never auto-select a different person**. Tap a visible box again to select.
+
+- **WL HEVC:** additional up-to-5-FPS 320-wide local TextureView sampling; existing 1-FPS Gemini Live JPEG feed stays unchanged.
+- **MJPEG:** forwards decoded camera frames into an async, bounded CPU inference queue (busy frames dropped); bitmap remains owned by the existing preview.
+- **Offline:** the official model is fetched by Gradle at initial APK build time and bundled as an asset. Vision does not need an Internet/Termux server when the car is in use. Android build needs Internet once to download the official model and MediaPipe dependency.
+- **Safety:** this is **display-only** computer vision. No motor tool or UDP command is issued by detection, target selection or lost-target processing. Camera reconnect/app pause turns recognition off and clears the selection. `get_camera_status` exposes read-only Vision status.
+- **Provenance / validation:** [Crew Vision Stage 1 QA](docs/CREW_VISION_STAGE1_QA.md). User must verify model download, Android SDK build, performance on Samsung and no motor/control regression before depending on it.
+
+**Not included yet:** object following, autonomous steering, distance estimation, obstacle avoidance, real-person identity matching, or any vision-to-motor control.
