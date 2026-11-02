@@ -18,7 +18,7 @@ public final class VisionOverlay extends View {
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Listener listener;
     private boolean enabled;
-    private boolean aspectFit;
+    private boolean imageCrop;
     private float imageAspect = 16f / 9f;
     private long inferenceMs;
 
@@ -40,7 +40,7 @@ public final class VisionOverlay extends View {
                        float sourceAspect, boolean imageFit) {
         if (!enabled) return;
         imageAspect = sourceAspect > 0f ? sourceAspect : 16f / 9f;
-        aspectFit = imageFit;
+        imageCrop = imageFit;
         inferenceMs = elapsedMs;
         tracker.observe(people, at);
         invalidate();
@@ -54,20 +54,24 @@ public final class VisionOverlay extends View {
 
     public boolean hasSelection() { return tracker.hasSelection(); }
     public boolean targetLost() { return tracker.targetLost(); }
+    public PersonTracker.Box selectedTarget() { return tracker.selectedBox(); }
+    public long lastFrameAt() { return tracker.lastFrameAt(); }
     public int personCount() { return tracker.boxes().size(); }
     public long lastInferenceMs() { return inferenceMs; }
     public void clear() { tracker.clear(); invalidate(); }
 
     private RectF displayArea() {
         float w = getWidth(), h = getHeight();
-        if (!aspectFit || w <= 0 || h <= 0) return new RectF(0, 0, w, h);
+        if (!imageCrop || w <= 0 || h <= 0) return new RectF(0, 0, w, h);
+        // Center-crop mapping matches ImageView.ScaleType.CENTER_CROP.
+        // The returned rect can extend past the view; Canvas clips drawing.
         float viewAspect = w / h;
         if (viewAspect > imageAspect) {
-            float imageW = h * imageAspect;
-            return new RectF((w - imageW) / 2, 0, (w + imageW) / 2, h);
+            float imageH = w / imageAspect;
+            return new RectF(0, (h - imageH) / 2, w, (h + imageH) / 2);
         }
-        float imageH = w / imageAspect;
-        return new RectF(0, (h - imageH) / 2, w, (h + imageH) / 2);
+        float imageW = h * imageAspect;
+        return new RectF((w - imageW) / 2, 0, (w + imageW) / 2, h);
     }
 
     private RectF toScreen(PersonTracker.Box b, RectF area) {
@@ -106,7 +110,7 @@ public final class VisionOverlay extends View {
         paint.setTextSize(dp(11));
         paint.setColor(Color.WHITE);
         String label = tracker.targetLost() ? "目標遺失 · 請重新選擇" :
-                selected >= 0 ? "已鎖定（僅視覺）" :
+                selected >= 0 ? "已鎖定人物" :
                         "辨識 " + boxes.size() + " 人 · 點框鎖定";
         canvas.drawText(label, dp(10), dp(20), paint);
     }
@@ -115,17 +119,30 @@ public final class VisionOverlay extends View {
         return value * getResources().getDisplayMetrics().density;
     }
 
-    @Override public boolean onTouchEvent(MotionEvent event) {
+    public boolean selectAt(float x, float y) {
         if (!enabled) return false;
-        if (event.getActionMasked() != MotionEvent.ACTION_DOWN) return false;
         RectF area = displayArea();
         if (area.width() <= 0 || area.height() <= 0) return false;
-        float nx = (event.getX() - area.left) / area.width();
-        float ny = (event.getY() - area.top) / area.height();
-        if (!tracker.select(nx, ny, android.os.SystemClock.elapsedRealtime())) return false;
-        invalidate();
-        listener.onSelectionChanged(true);
-        performClick();
+        float nx = (x - area.left) / area.width();
+        float ny = (y - area.top) / area.height();
+        boolean picked = tracker.select(nx, ny, android.os.SystemClock.elapsedRealtime());
+        if (picked) {
+            invalidate();
+            listener.onSelectionChanged(true);
+        }
+        return picked;
+    }
+
+    @Override public boolean onTouchEvent(MotionEvent event) {
+        if (!enabled) return false;
+        if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+            selectAt(event.getX(), event.getY());
+            return true; // central gestures remain with the overlay, not motor controls
+        }
+        if (event.getActionMasked() == MotionEvent.ACTION_UP) {
+            performClick();
+            return true;
+        }
         return true;
     }
 

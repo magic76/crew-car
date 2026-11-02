@@ -80,6 +80,7 @@ public final class PersonTracker {
             return;
         }
         float best = 0f;
+        float secondBest = 0f;
         int match = -1;
         for (int i = 0; i < boxes.size(); i++) {
             Box next = boxes.get(i);
@@ -87,11 +88,19 @@ public final class PersonTracker {
             float distance = (float) Math.hypot(
                     next.centerX() - previousTarget.centerX(),
                     next.centerY() - previousTarget.centerY());
-            if (overlap >= .25f && distance <= .20f && overlap > best) {
-                best = overlap;
-                match = i;
+            if (overlap >= .25f && distance <= .20f) {
+                if (overlap > best) {
+                    secondBest = best;
+                    best = overlap;
+                    match = i;
+                } else if (overlap > secondBest) {
+                    secondBest = overlap;
+                }
             }
         }
+        // When people overlap, visual IoU cannot establish identity.
+        // Stop following instead of silently switching to another nearby person.
+        if (secondBest >= .25f && best - secondBest < .15f) match = -1;
         selectedIndex = match;
         if (match < 0) {
             lost = true;
@@ -114,6 +123,11 @@ public final class PersonTracker {
     public synchronized int selectedIndex() { return selectedIndex; }
     public synchronized boolean hasSelection() { return previousTarget != null; }
     public synchronized boolean targetLost() { return lost; }
+    /** Never expose the last-known stale box as an active target. */
+    public synchronized Box selectedBox() {
+        return !lost && selectedIndex >= 0 && selectedIndex < boxes.size()
+                ? boxes.get(selectedIndex) : null;
+    }
     public synchronized long lastFrameAt() { return lastFrameAt; }
 
     public static float iou(Box a, Box b) {

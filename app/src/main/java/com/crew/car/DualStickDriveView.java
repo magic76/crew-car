@@ -23,6 +23,10 @@ public final class DualStickDriveView extends View {
     private DriverLayoutConfig layout = DriverLayoutConfig.defaults();
     private boolean controlsAvailable;
     private final Listener listener;
+    private java.util.function.BiConsumer<Float, Float> centerTapListener;
+    public void setCenterTapListener(java.util.function.BiConsumer<Float, Float> listener) {
+        centerTapListener = listener;
+    }
     private final int colorPanel = Color.rgb(17, 26, 39);
     private final int colorAccent = Color.rgb(33, 211, 216);
     private int throttlePointer = -1;
@@ -75,7 +79,7 @@ public final class DualStickDriveView extends View {
         float width = getWidth(), height = getHeight();
         float side = width * layout.sideFraction();
         paint.setStyle(Paint.Style.FILL);
-        paint.setColor(colorPanel);
+        paint.setColor(Color.argb(128, 17, 26, 39)); // 50% overlay on FPV
         c.drawRoundRect(0, 0, side - dp(2), height, dp(16), dp(16), paint);
         c.drawRoundRect(width - side + dp(2), 0, width, height, dp(16), dp(16), paint);
 
@@ -126,7 +130,8 @@ public final class DualStickDriveView extends View {
     private void drawSteeringButton(Canvas c, float l, float t, float r, float b,
                                     int direction, String label) {
         boolean pressed = controlsAvailable && steering() == direction;
-        paint.setColor(pressed ? colorAccent : Color.rgb(42, 62, 82));
+        paint.setColor(pressed ? Color.argb(210, 33, 211, 216) :
+                Color.argb(128, 42, 62, 82));
         c.drawRoundRect(l, t, r, b, dp(12), dp(12), paint);
         paint.setTextAlign(Paint.Align.CENTER);
         paint.setTextSize(dp(24));
@@ -160,7 +165,8 @@ public final class DualStickDriveView extends View {
     private void drawThrottleButton(Canvas c, float left, float top, float right, float bottom,
                                     int value, String label) {
         boolean active = controlsAvailable && buttonThrottle == value;
-        paint.setColor(active ? colorAccent : Color.rgb(42, 62, 82));
+        paint.setColor(active ? Color.argb(210, 33, 211, 216) :
+                Color.argb(128, 42, 62, 82));
         c.drawRoundRect(left, top, right, bottom, dp(14), dp(14), paint);
         paint.setTextAlign(Paint.Align.CENTER);
         paint.setTextSize(dp(17));
@@ -206,6 +212,12 @@ public final class DualStickDriveView extends View {
     @Override public boolean onTouchEvent(MotionEvent event) {
         int beforeSteer = steering(), beforeThrottle = buttonThrottle;
         int action = event.getActionMasked();
+        // Let an initial central FPV tap fall through to the underlying Vision overlay.
+        // Preserve left/right physical pointer handling and multi-touch support.
+        if (action == MotionEvent.ACTION_DOWN &&
+                event.getX() >= getWidth() * layout.sideFraction() &&
+                event.getX() < getWidth() * (1f - layout.sideFraction()))
+            return false;
         if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN) {
             int index = event.getActionIndex();
             int id = event.getPointerId(index);
@@ -220,6 +232,9 @@ public final class DualStickDriveView extends View {
                 if (layout.buttonSteering)
                     steeringButtons.down(id, x, steeringButtonY(y), getWidth() * layout.sideFraction(), getHeight());
                 else input.down(id, x, y, getWidth(), getHeight());
+            } else if (centerTapListener != null) {
+                // Allows a second thumb to select a person while the first controls a side.
+                centerTapListener.accept(x, y);
             }
             if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
         } else if (action == MotionEvent.ACTION_MOVE) {

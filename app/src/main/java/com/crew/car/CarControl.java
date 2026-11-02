@@ -35,6 +35,9 @@ public final class CarControl {
     private volatile long deadline;
     private volatile String active = "stop";
     private volatile boolean aiHoldActive;
+    private volatile boolean visionFollowActive;
+    private volatile long visionFollowLimitAt;
+    private volatile BooleanSupplier visionSafetyGate = () -> false;
     private volatile int aiSteer, aiThrottle;
     /** Expiring steering correction; 0 = latch current direction until explicitly changed. */
     private volatile long aiSteerReleaseAt;
@@ -58,6 +61,21 @@ public final class CarControl {
         this.network = network;
         this.log = log;
         io.scheduleAtFixedRate(() -> {
+            if (visionFollowActive) {
+                long now = SystemClock.elapsedRealtime();
+                boolean safe;
+                try { safe = visionSafetyGate.getAsBoolean(); }
+                catch (Exception ignored) { safe = false; }
+                if (!armed || manual || !safe || now >= visionFollowLimitAt ||
+                        now >= deadline) {
+                    boolean timedOut = now >= visionFollowLimitAt;
+                    visionFollowActive = false;
+                    if (timedOut || !safe) armed = false;
+                    stopInternal(timedOut ? "vision session limit" :
+                            !safe ? "vision camera/target gate stale" : "vision input lease expired");
+                    return;
+                }
+            }
             if (aiHoldActive && armed) {
                 long now = SystemClock.elapsedRealtime();
                 if (aiSteerReleaseAt > 0 && now >= aiSteerReleaseAt) {
@@ -118,11 +136,15 @@ public final class CarControl {
     public boolean armed() { return armed; }
     public boolean manual() { return manual; }
     public void setManual(boolean value) {
-        if (value && aiHoldActive) emergencyStop();
+        if (value && (aiHoldActive || visionFollowActive)) emergencyStop();
         manual = value;
     }
     public void setAiSafetyGate(BooleanSupplier gate) {
         aiSafetyGate = gate == null ? () -> false : gate;
+    }
+    public boolean visionFollowActive() { return visionFollowActive && armed && SystemClock.elapsedRealtime() < visionFollowLimitAt; }
+    public void setVisionSafetyGate(BooleanSupplier gate) {
+        visionSafetyGate = gate == null ? () -> false : gate;
     }
     public boolean aiHoldActive() { return aiHoldActive && armed && deadline > SystemClock.elapsedRealtime(); }
     public int aiSteering() { return aiHoldActive() ? aiSteer : 0; }
@@ -157,6 +179,8 @@ public final class CarControl {
             throw new IllegalArgumentException("Cannot send WL commands to KL");
         motionEpoch.incrementAndGet();
         aiHoldActive = false;
+        visionFollowActive = false;
+        visionFollowLimitAt = 0;
         aiSteerReleaseAt = 0;
         boolean stopPrevious = armed || !"stop".equals(active);
         armed = false;
@@ -202,6 +226,7 @@ public final class CarControl {
     }
 
     public void disarm() {
+        visionFollowActive = false;
         aiHoldActive = false;
         aiSteerReleaseAt = 0;
         boolean stopCurrent = armed || !"stop".equals(active);
@@ -231,6 +256,7 @@ public final class CarControl {
             if ("stop".equals(direction)) { emergencyStop(); return "stopped"; }
             if (!armed) return "blocked: control locked";
             if (fromAi && manual) return "blocked: manual priority";
+            if (fromAi && visionFollowActive) return "blocked: visual follow owns controls";
             if (fromAi && aiHoldActive)
                 return "blocked: throttle is held; use steer_car or set_drive_state with throttle=keep (no brake sent)";
             int ms = Math.max(100, Math.min(fromAi ? 650 : 500, requestedMs));
@@ -261,6 +287,7 @@ public final class CarControl {
         if (violation != null) return violation;
         if (!armed) return "blocked: control locked";
         if (manual) return "blocked: manual priority";
+        if (visionFollowActive) return "blocked: visual follow owns controls";
         if (!config.wltoys) return "blocked: sustained two-axis control requires WL profile";
         boolean prior = aiHoldActive();
         if (("keep".equals(steering) || "keep".equals(throttle)) && !prior)
@@ -344,6 +371,67 @@ public final class CarControl {
                 "ms; throttle remains held, original cruise deadline unchanged";
     }
 
+    /**
+     * One explicit human-authorized 8s local visual-follow session.
+     * Each fresh inference must renew a 350ms motor lease; no model/cloud commands.
+     * The motor output is gain-capped to 50% of OEM deltas, no reverse.
+     */
+    public synchronized String beginVisionFollow() {
+        if (!armed || manual || aiHoldActive || visionFollowActive ||
+                !"stop".equals(active))
+            return "blocked: car must be armed and stationary, no manual/AI drive";
+        if (!config.wltoys) return "blocked: visual following supports WL only";
+        boolean safe;
+        try { safe = visionSafetyGate.getAsBoolean(); }
+        catch (Exception ignored) { safe = false; }
+        if (!safe) return "blocked: vision target/camera/Wi-Fi not ready";
+        motionEpoch.incrementAndGet();
+        visionFollowActive = true;
+        visionFollowLimitAt = SystemClock.elapsedRealtime() + 8000;
+        deadline = SystemClock.elapsedRealtime() + 350;
+        active = "stop";
+        return "visual follow authorized for at most 8 seconds";
+    }
+
+    public String driveVisionAxes(int steer, int forward, long observedAt) {
+        if (!visionFollowActive()) return "blocked: visual follow inactive";
+        if (steer < -1 || steer > 1 || forward < 0 || forward > 1)
+            return "blocked: vision axes invalid";
+        long now = SystemClock.elapsedRealtime();
+        if (observedAt <= 0 || observedAt > now || now - observedAt > 250)
+            return "blocked: stale vision inference";
+        final long epoch = motionEpoch.get();
+        io.execute(() -> {
+            long current = SystemClock.elapsedRealtime();
+            if (!visionFollowActive || !armed || manual || aiHoldActive ||
+                    epoch != motionEpoch.get() || current - observedAt > 250 ||
+                    current >= visionFollowLimitAt) return;
+            boolean safe;
+            try { safe = visionSafetyGate.getAsBoolean(); }
+            catch (Exception ignored) { safe = false; }
+            if (!safe) {
+                visionFollowActive = false;
+                armed = false;
+                stopInternal("vision gate stale");
+                return;
+            }
+            deadline = Math.min(current + 350, visionFollowLimitAt);
+            String command = forward == 0 ? "stop" : "vision:" + steer + ":" + forward;
+            if (!command.equals(active)) {
+                active = command;
+                sendInternal(command);
+            }
+        });
+        return "queued visual axes, short lease; no vehicle ACK";
+    }
+
+    public void stopVisionFollow() {
+        if (visionFollowActive) {
+            visionFollowActive = false;
+            emergencyStop();
+        }
+    }
+
     /** Manual two-axis input; the OEM profile can encode throttle and steering together. */
     public String driveManualAxes(int steer, int throttle) {
         if (steer < -1 || steer > 1 || throttle < -1 || throttle > 1)
@@ -374,6 +462,8 @@ public final class CarControl {
     }
 
     public void emergencyStop() {
+        visionFollowActive = false;
+        visionFollowLimitAt = 0;
         aiSteerReleaseAt = 0;
         aiHoldActive = false;
         aiSteer = 0;
@@ -391,6 +481,8 @@ public final class CarControl {
 
     private void stopInternal(String reason, Config target) {
         motionEpoch.incrementAndGet(); // invalidate every pending motor command on fail-safe STOP
+        visionFollowActive = false;
+        visionFollowLimitAt = 0;
         aiSteerReleaseAt = 0;
         aiHoldActive = false;
         aiSteer = 0;
@@ -412,7 +504,14 @@ public final class CarControl {
         }
         try {
             byte[] bytes;
-            if (c.wltoys && direction.startsWith("axes:")) {
+            if (c.wltoys && direction.startsWith("vision:")) {
+                String[] axes = direction.split(":");
+                if (axes.length != 3) throw new IllegalArgumentException("bad vision command");
+                // Independent low power regardless of the selected manual tuning.
+                CarTuning reduced = new CarTuning(c.tuning.intervalMs, 50, 50);
+                bytes = WltoysProtocol.control(Integer.parseInt(axes[1]),
+                        Integer.parseInt(axes[2]), reduced);
+            } else if (c.wltoys && direction.startsWith("axes:")) {
                 String[] axes = direction.split(":");
                 if (axes.length != 3) throw new IllegalArgumentException("bad axis command");
                 bytes = WltoysProtocol.control(Integer.parseInt(axes[1]), Integer.parseInt(axes[2]), c.tuning);

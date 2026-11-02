@@ -165,3 +165,13 @@ The landscape driving header has a new **辨識** toggle. When enabled, an optio
 - **Provenance / validation:** [Crew Vision Stage 1 QA](docs/CREW_VISION_STAGE1_QA.md). User must verify model download, Android SDK build, performance on Samsung and no motor/control regression before depending on it.
 
 **Not included yet:** object following, autonomous steering, distance estimation, obstacle avoidance, real-person identity matching, or any vision-to-motor control.
+
+## v0.1.21 — full-screen FPV and opt-in supervised person following
+
+The FPV picture now **fills the driving cockpit** edge to edge. Left and right driving buttons are painted at **50% transparency** over the FPV; control labels remain readable. Both HEVC and JPEG preserve image aspect ratio by center-cropping extra edges instead of stretching people. The center video remains tappable even through the full-screen driving-pad layer.
+
+After enabling **辨識**, tap a person to select them. To try supervised following, physically arm the WL car and press **跟隨**; read and accept the caution dialog. The phone then performs **local** vision-to-axes decisions for a **maximum eight-second run**, issuing at most a 350ms movement lease per fresh person detection, and capped to **50% OEM motor packet amplitudes**. It stops on apparent proximity, target drifting too far sideways, person loss, stale video, Wi-Fi loss, manual takeover, settings or emergency STOP. The 8s absolute timer disarms and requires fresh manual arming.
+
+**This is experimental, not autonomous safe navigation.** A monocular camera cannot reliably measure distance or see every obstacle; there is no obstacle avoidance, motor speed feedback or packet ACK. Test with wheels raised, then only on empty private ground under direct supervision, with physical power disconnect accessible. Avoid children, pets, traffic, stairs or uncontrolled public settings. Gemini motor tools are not used by the local follow loop.
+
+Manual RC button hold semantics and its 180ms renewal / 500ms watchdog remain unchanged. See [full-bleed Vision Follow QA](docs/VISION_FOLLOW_FULLBLEED_QA.md).

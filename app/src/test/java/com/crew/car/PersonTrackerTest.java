@@ -65,6 +65,16 @@ public final class PersonTrackerTest {
         assertFalse(tracker.select(.15f,.15f,0));
     }
 
+    @Test public void ambiguousOverlappingPeopleMustLoseTracking() {
+        PersonTracker tracker = new PersonTracker();
+        tracker.observe(Collections.singletonList(box(.20f,.10f)), 100);
+        assertTrue(tracker.select(.24f,.15f, 120));
+        tracker.observe(Arrays.asList(box(.21f,.10f),box(.22f,.11f)), 250);
+        assertTrue(tracker.targetLost());
+        assertEquals(-1, tracker.selectedIndex());
+        assertNull(tracker.selectedBox());
+    }
+
     @Test public void intersectingBoxesHaveExpectedIoU() {
         assertEquals(1f, PersonTracker.iou(box(.1f,.1f),box(.1f,.1f)), .0001f);
         assertEquals(0f, PersonTracker.iou(box(.1f,.1f),box(.65f,.1f)), .0001f);
