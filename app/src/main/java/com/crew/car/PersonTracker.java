@@ -114,6 +114,11 @@ public final class PersonTracker {
     public synchronized int selectedIndex() { return selectedIndex; }
     public synchronized boolean hasSelection() { return previousTarget != null; }
     public synchronized boolean targetLost() { return lost; }
+    /** Never expose the last-known stale box as an active target. */
+    public synchronized Box selectedBox() {
+        return !lost && selectedIndex >= 0 && selectedIndex < boxes.size()
+                ? boxes.get(selectedIndex) : null;
+    }
     public synchronized long lastFrameAt() { return lastFrameAt; }
 
     public static float iou(Box a, Box b) {
