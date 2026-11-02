@@ -19,8 +19,10 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Verify preinstalled GitHub hosted Android SDK
+        run: |
+          test -n "${ANDROID_HOME}"
+          test -d "${ANDROID_HOME}/platforms/android-35" ||             "${ANDROID_HOME}/cmdline-tools/16.0/bin/sdkmanager" "platforms;android-35"
       - name: Set up Gradle 8.9 (repository does not have wrapper)
         uses: gradle/actions/setup-gradle@v4
         with:
