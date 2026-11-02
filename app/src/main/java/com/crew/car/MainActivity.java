@@ -12,6 +12,7 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.net.Network;
 import android.view.SurfaceHolder;
+import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.provider.Settings;
 import android.text.InputType;
@@ -49,7 +50,7 @@ public final class MainActivity extends Activity {
     private Spinner transport, encoding, profile, cameraAdapter, tuningPreset;
     private SeekBar tuningPeriod, tuningSteer, tuningThrottle;
     private TextView tuningPreview, tuningActive, txDiagnostics;
-    private TextView netStatus, cameraStatus, liveStatus, transcript, logs;
+    private TextView netStatus, cameraStatus, liveStatus, driverLiveStatus, transcript, logs;
     private ImageView preview;
     private SurfaceView hevcPreview;
     private CheckBox arm;
@@ -103,7 +104,7 @@ public final class MainActivity extends Activity {
         gemini = new GeminiLive(log);
         render();
         log.setListener(s -> runOnUiThread(() -> { if (logs != null) logs.setText(s); }));
-        log.i("APP", "Crew Car v0.1.3; driver console and camera lifecycle; no vehicle ACK");
+        log.i("APP", "Crew Car v0.1.5; chosen launcher icon and driving polish; no vehicle ACK");
         routes.diagnostics();
     }
 
@@ -173,11 +174,15 @@ public final class MainActivity extends Activity {
         brand.setTextSize(20);
         brand.setTypeface(null, Typeface.BOLD);
         topRow.addView(brand, new LinearLayout.LayoutParams(0, dp(50), 1));
-        modeButton = button("設定／診斷", v -> toggleMode());
-        topRow.addView(modeButton, new LinearLayout.LayoutParams(dp(116), dp(50)));
+        Button retryCamera = button("重連鏡頭", v -> reconnectCamera());
+        retryCamera.setTextSize(12);
+        topRow.addView(retryCamera, new LinearLayout.LayoutParams(dp(89), dp(50)));
+        modeButton = button("設定", v -> toggleMode());
+        topRow.addView(modeButton, new LinearLayout.LayoutParams(dp(76), dp(50)));
         banner.addView(topRow);
         netStatus = label(banner, "檢查網路中…", 12);
         cameraStatus = label(banner, "攝影機未連線", 12);
+        driverLiveStatus = label(banner, "Gemini Live：尚未連線", 12);
 
         FrameLayout cameraFrame = new FrameLayout(this);
         int width = getResources().getDisplayMetrics().widthPixels - dp(24);
@@ -259,12 +264,7 @@ public final class MainActivity extends Activity {
             }
             @Override public void onNothingSelected(android.widget.AdapterView<?> parent) {}
         });
-        row(root, button("重新連接攝影機", v -> {
-                    cameraWanted = true;
-                    cameraManualRequested = true;
-                    stopCameraReceiver();
-                    maybeStartCamera();
-                }),
+        row(root, button("重新連接攝影機", v -> reconnectCamera()),
                 button("停止影像", v -> {
                     cameraWanted = false;
                     cameraManualRequested = false;
@@ -355,7 +355,10 @@ public final class MainActivity extends Activity {
         for (String d : new String[]{"forward","backward","left","right","stop"}) {
             packets.put(d, field(root, d + " 封包（空白 = 禁止解鎖）", saved("packet_" + d, ""), false));
         }
-        row(root, button("套用連線設定", v -> applyConfig()), button("立即停止", v -> emergencyStopAndLock()));
+        row(root, button("套用連線設定", v -> {
+                    emergencyStopAndLock();
+                    applyConfig();
+                }), button("立即停止", v -> emergencyStopAndLock()));
 
         arm = new CheckBox(this);
         arm.setText("解鎖手動控制／AI 短距離指令（先清空周圍，確認車輪懸空測試）");
@@ -369,8 +372,12 @@ public final class MainActivity extends Activity {
                 if (issue != null) {
                     log.e("SAFETY", "arm denied: " + issue);
                     uncheck();
+                } else {
+                    getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                    updateTuningPreview();
                 }
             } else {
+                getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                 releaseManualInputs();
                 control.disarm();
             }
@@ -414,6 +421,7 @@ public final class MainActivity extends Activity {
                     gemini.disconnect();
                     control.emergencyStop();
                     liveStatus.setText("Gemini 已手動斷線");
+                    if (driverLiveStatus != null) driverLiveStatus.setText("Gemini Live：已手動斷線");
                 }));
         row(root, button("開啟麥克風", v -> startMic()), button("關閉麥克風", v -> gemini.stopMic()));
         prompt = field(root, "測試文字，例如：請描述鏡頭畫面（不要求移動）", "", false);
@@ -470,9 +478,14 @@ public final class MainActivity extends Activity {
         if (tuningPreview == null || tuningPeriod == null ||
                 tuningSteer == null || tuningThrottle == null) return;
         CarTuning t = selectedTuning();
-        tuningPreview.setText("準備套用：" + t.intervalMs + "ms（約 " +
-                (1000 / t.intervalMs) + "次／秒）｜轉向" + t.steeringPercent +
-                "%｜油門" + t.throttlePercent + "%。按套用後需重新解鎖。");
+        CarTuning active = control.tuning();
+        boolean applied = t.intervalMs == active.intervalMs &&
+                t.steeringPercent == active.steeringPercent &&
+                t.throttlePercent == active.throttlePercent;
+        tuningPreview.setText((applied ? "目前已套用：" : "尚未套用：") + t.intervalMs +
+                "ms（約 " + (1000 / t.intervalMs) + "次／秒）｜轉向" +
+                t.steeringPercent + "%｜油門" + t.throttlePercent + "%" +
+                (applied ? "" : "。請按「套用調校」；會先停車並上鎖。"));
     }
 
     private void updateTxStatus() {
@@ -543,6 +556,7 @@ public final class MainActivity extends Activity {
                     .apply();
             control.configure(cfg);
             updateTxStatus();
+            updateTuningPreview();
             log.i("UI", "control config applied, safety lock ON; tuning=" + cfg.tuning);
             return true;
         } catch (Exception e) {
@@ -571,6 +585,16 @@ public final class MainActivity extends Activity {
         cameraRunning = true;
         cameraNetwork = wifi;
         startCamera(++cameraSession);
+    }
+
+    /** One-tap camera recovery from the driving screen; never leave motors armed. */
+    private void reconnectCamera() {
+        emergencyStopAndLock();
+        cameraWanted = true;
+        cameraManualRequested = true;
+        stopCameraReceiver();
+        maybeStartCamera();
+        log.i("CAM", "user-requested camera reconnect; motor disarmed");
     }
 
     private void stopCameraReceiver() {
@@ -638,6 +662,7 @@ public final class MainActivity extends Activity {
             arm.setChecked(false);
             changingConfig = false;
         }
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         log.i("SAFETY", "USER E-STOP: disarmed, manual re-arm required");
     }
 
@@ -647,7 +672,11 @@ public final class MainActivity extends Activity {
         gemini.connect(apiKey, routes.internet(routes.wifi()), new GeminiLive.Listener() {
             @Override public void onStatus(String status) {
                 if (status.contains("失敗") || status.contains("中斷")) control.emergencyStop();
-                runOnUiThread(() -> liveStatus.setText(status));
+                runOnUiThread(() -> {
+                    liveStatus.setText(status);
+                    if (driverLiveStatus != null)
+                        driverLiveStatus.setText("Gemini Live：" + status);
+                });
                 log.i("LIVE", "state updated"); // no credentials
             }
             @Override public void onStop() {
@@ -771,6 +800,7 @@ public final class MainActivity extends Activity {
     @Override protected void onPause() {
         super.onPause();
         foreground = false;
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         main.removeCallbacks(cameraMonitor);
         releaseManualInputs();
         if (control != null) control.disarm();
