@@ -858,6 +858,8 @@ public final class MainActivity extends Activity {
                     liveStatus.setText(status);
                     if (driverLiveStatus != null)
                         driverLiveStatus.setText("Gemini Live：" + status);
+                    if (status.contains("失敗") || status.contains("中斷"))
+                        autoStartMicOnReady = false;
                     if (status.contains("已連線") && autoStartMicOnReady) {
                         autoStartMicOnReady = false;
                         startMic();
@@ -1023,6 +1025,7 @@ public final class MainActivity extends Activity {
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         main.removeCallbacks(cameraMonitor);
         main.removeCallbacks(aiDriveTicker);
+        autoStartMicOnReady = false;
         releaseManualInputs();
         if (control != null) control.disarm();
         if (arm != null) uncheck();
