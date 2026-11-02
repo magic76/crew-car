@@ -89,7 +89,7 @@ public final class MainActivity extends Activity {
     private boolean drivingMode = true;
     private boolean cameraWanted = true;
     private boolean cameraManualRequested;
-    private boolean foreground;
+    private volatile boolean foreground;
     private boolean cameraRunning;
     private Network cameraNetwork;
     private long cameraSession;
@@ -498,8 +498,10 @@ public final class MainActivity extends Activity {
                 button("斷線 Live", v -> {
                     liveConnectToken++;
                     routes.releaseCellularForLive();
+                    autoStartMicOnReady = false;
                     gemini.disconnect();
                     control.emergencyStop();
+                    updateTalkButtons();
                     liveStatus.setText("Gemini 已手動斷線");
                     if (driverLiveStatus != null) driverLiveStatus.setText("Gemini Live：已手動斷線");
                 }));
@@ -777,7 +779,7 @@ public final class MainActivity extends Activity {
                 gemini.stopMic();
                 updateTalkButtons();
             } else {
-                autoStartMicOnReady = true;
+                autoStartMicOnReady = false;
                 startMic();
                 updateTalkButtons();
             }
@@ -789,6 +791,7 @@ public final class MainActivity extends Activity {
     }
 
     private void interruptAssistant() {
+        control.emergencyStop(); // user interrupt also terminates an active AI cruise lease
         gemini.interruptSpeech();
         updateTalkButtons();
     }
@@ -808,6 +811,7 @@ public final class MainActivity extends Activity {
         main.removeCallbacks(saveGeminiKeyLater);
         saveGeminiKeyLocally();
         if (apiKey.isEmpty()) {
+            autoStartMicOnReady = false;
             liveStatus.setText("請先輸入 Gemini API Key");
             if (driverLiveStatus != null) driverLiveStatus.setText("Gemini Live：未輸入 Key");
             return;
