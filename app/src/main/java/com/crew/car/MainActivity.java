@@ -9,12 +9,15 @@ import android.graphics.Color;
 import android.graphics.Matrix;
 import android.graphics.Typeface;
 import android.os.Bundle;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.net.Network;
 import android.graphics.SurfaceTexture;
 import android.view.WindowManager;
+import android.view.WindowInsets;
+import android.graphics.Insets;
 import android.widget.FrameLayout;
 import android.provider.Settings;
 import android.text.InputType;
@@ -92,6 +95,11 @@ public final class MainActivity extends Activity {
     private volatile int currentCameraAdapter;
     private boolean changingConfig;
     private ScrollView settingsScroller;
+    private LinearLayout settingsShell;
+    private LinearLayout[] settingsSections;
+    private Button[] settingsNavButtons;
+    private TextView settingsSafetyLabel;
+    private int activeSettingsTab = 0;
     private Button modeButton;
     private DualStickDriveView drivePad;
     private FrameLayout cockpit, cameraFrame;
@@ -201,11 +209,50 @@ public final class MainActivity extends Activity {
         return getPreferences(MODE_PRIVATE).getString(name, fallback);
     }
 
+    /**
+     * Android 15 edge-to-edge plus pre-30 landscape navigation/cutout handling.
+     * Keep all driver buttons INSIDE the platform-provided safe viewport.
+     */
+    private void applySystemSafeInsets(View root) {
+        if (Build.VERSION.SDK_INT >= 30) {
+            getWindow().setDecorFitsSystemWindows(false);
+        } else {
+            getWindow().getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE |
+                    View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
+                    View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
+        }
+        getWindow().setStatusBarColor(Color.TRANSPARENT);
+        getWindow().setNavigationBarColor(Color.TRANSPARENT);
+        root.setOnApplyWindowInsetsListener((view, windowInsets) -> {
+            int left, top, right, bottom;
+            if (Build.VERSION.SDK_INT >= 30) {
+                Insets bounds = windowInsets.getInsets(
+                        WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                left = bounds.left;
+                top = bounds.top;
+                right = bounds.right;
+                bottom = bounds.bottom;
+            } else {
+                left = windowInsets.getSystemWindowInsetLeft();
+                top = windowInsets.getSystemWindowInsetTop();
+                right = windowInsets.getSystemWindowInsetRight();
+                bottom = windowInsets.getSystemWindowInsetBottom();
+            }
+            if (view.getPaddingLeft() != left || view.getPaddingTop() != top ||
+                    view.getPaddingRight() != right || view.getPaddingBottom() != bottom)
+                view.setPadding(left, top, right, bottom);
+            return windowInsets;
+        });
+        root.requestApplyInsets();
+    }
+
     private void render() {
         LinearLayout screen = new LinearLayout(this);
         screen.setOrientation(LinearLayout.VERTICAL);
         screen.setBackgroundColor(Color.rgb(248, 250, 252));
         setContentView(screen);
+        applySystemSafeInsets(screen);
         LinearLayout banner = new LinearLayout(this);
         banner.setPadding(dp(8), dp(1), dp(8), dp(1));
         banner.setOrientation(LinearLayout.VERTICAL);
@@ -303,7 +350,32 @@ public final class MainActivity extends Activity {
         root.setPadding(dp(16), dp(15), dp(16), dp(32));
         root.setBackgroundColor(Color.rgb(248, 250, 252));
         settingsScroller.addView(root);
-        settingsScroller.setVisibility(View.GONE);
+        settingsShell = new LinearLayout(this);
+        settingsShell.setOrientation(LinearLayout.HORIZONTAL);
+        settingsShell.setBackgroundColor(Color.rgb(248, 250, 252));
+        LinearLayout settingsNavigation = new LinearLayout(this);
+        settingsNavigation.setOrientation(LinearLayout.VERTICAL);
+        settingsNavigation.setPadding(dp(5), dp(8), dp(5), dp(5));
+        settingsNavigation.setBackgroundColor(Color.rgb(228, 236, 244));
+        settingsShell.addView(settingsNavigation,
+                new LinearLayout.LayoutParams(dp(184), -1));
+        settingsShell.addView(settingsScroller,
+                new LinearLayout.LayoutParams(0, -1, 1));
+        String[] categories = {"車輛與連線", "操控設定", "AI 與攝影機", "進階與診斷"};
+        settingsNavButtons = new Button[categories.length];
+        for (int i = 0; i < categories.length; i++) {
+            final int index = i;
+            Button nav = button(categories[i], v -> setSettingsTab(index));
+            nav.setTextSize(13);
+            nav.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+            nav.setMinHeight(0);
+            nav.setMinimumHeight(0);
+            // Four categories fit short landscape viewports without scrolling the rail.
+            settingsNavigation.addView(nav,
+                    new LinearLayout.LayoutParams(-1, 0, 1f));
+            settingsNavButtons[i] = nav;
+        }
+        settingsShell.setVisibility(View.GONE);
         // This single view owns BOTH touch pointers; no two-button multi-touch conflicts.
         drivePad = new DualStickDriveView(this, (steer, throttle) -> {
             heldSteer = steer;
@@ -329,7 +401,7 @@ public final class MainActivity extends Activity {
         drivePad.setControlsAvailable(false);
         cockpit.addView(drivePad, new FrameLayout.LayoutParams(-1, -1));
         // Settings are an overlay; the TextureView is not detached or restarted.
-        cockpit.addView(settingsScroller, new FrameLayout.LayoutParams(-1, -1));
+        cockpit.addView(settingsShell, new FrameLayout.LayoutParams(-1, -1));
 
         LinearLayout driveConsole = new LinearLayout(this);
         driveConsole.setOrientation(LinearLayout.HORIZONTAL);
@@ -337,15 +409,18 @@ public final class MainActivity extends Activity {
         driveConsole.setPadding(dp(8), dp(2), dp(8), dp(2));
         driveConsole.setBackgroundColor(Color.rgb(232, 239, 246));
         screen.addView(driveConsole, new LinearLayout.LayoutParams(-1, dp(62)));
-        TextView heading = label(root, "進階設定與除錯", 17);
+        // Capture the original form sections; preserve every existing input callback.
+        int[] settingsCuts = new int[8];
+        TextView heading = label(root, "車輛與連線", 17);
         heading.setTypeface(null, Typeface.BOLD);
-        label(root, "橫向駕駛：左側可選大按鍵或搖桿；右側按住前進／倒車。駕駛頁「操控」可調整觸控版面（調整時自動 STOP 上鎖）。", 13);
+        label(root, "選擇車型並確認 Wi-Fi。進入設定時車輛會先停止並上鎖，返回駕駛後再解鎖。", 13);
         row(root, button("開 Wi-Fi 設定", v -> startActivity(new Intent(Settings.ACTION_WIFI_SETTINGS))),
                 button("網路診斷", v -> {
                     routes.diagnostics();
                     updateNetworkStatus();
                 }));
 
+        settingsCuts[0] = root.getChildCount(); // vehicle intro / Wi-Fi actions
         label(root, "1. FPV 攝影機（KL 影像協定待驗證）", 17).setTypeface(null, Typeface.BOLD);
         cameraAdapter = new Spinner(this);
         cameraAdapter.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item,
@@ -383,6 +458,7 @@ public final class MainActivity extends Activity {
                     emergencyStopAndLock();
                 }));
 
+        settingsCuts[1] = root.getChildCount(); // camera / FPV
         label(root, "2. 車型選擇與小車控制", 17).setTypeface(null, Typeface.BOLD);
         label(root, "WL Tech 已有原廠候選控制協定；KL FPV 需本地 Agent 擷取資料後再實作，不能套用 WL 封包。", 12);
         profile = new Spinner(this);
@@ -397,6 +473,11 @@ public final class MainActivity extends Activity {
             }
             @Override public void onNothingSelected(android.widget.AdapterView<?> parent) {}
         });
+        settingsCuts[2] = root.getChildCount(); // vehicle profile
+        label(root, "觸控按鍵與操控方式", 17).setTypeface(null, Typeface.BOLD);
+        label(root, "調整左右按鍵、搖桿、油門位置和震動；不修改馬達輸出。", 12);
+        root.addView(button("調整駕駛按鍵布局", v -> openControlLayoutDialog()),
+                new LinearLayout.LayoutParams(-1, dp(48)));
         label(root, "操控調校｜預設與實際週期", 17)
                 .setTypeface(null, Typeface.BOLD);
         label(root, "週期越短，重複封包越密；原廠基準為 50ms。30／20／10ms 是頻率實驗值，測試時請架空車輪。", 12);
@@ -458,6 +539,7 @@ public final class MainActivity extends Activity {
                     tuningThrottle.setProgress(10);
                     updateTuningPreview();
                 }));
+        settingsCuts[3] = root.getChildCount(); // control tuning
         txDiagnostics = label(root, "本機封包診斷：尚未測試", 12);
         label(root, "本機傳送耗時／間隔不是小車回應時間，也不能用來推算實際車速。", 12);
         host = field(root, "控制端 IP", saved("host", "172.16.11.1"), false);
@@ -479,10 +561,20 @@ public final class MainActivity extends Activity {
                     applyConfig();
                 }), button("立即停止", v -> emergencyStopAndLock()));
 
+        settingsCuts[4] = root.getChildCount(); // advanced protocol fields
         arm = new CheckBox(this);
         arm.setText("解鎖駕駛");
         arm.setTextSize(13);
         driveConsole.addView(arm, new LinearLayout.LayoutParams(dp(126), -1));
+        settingsSafetyLabel = new TextView(this);
+        settingsSafetyLabel.setText("設定模式 · 車輛已上鎖");
+        settingsSafetyLabel.setTextSize(12);
+        settingsSafetyLabel.setTextColor(Color.rgb(75, 91, 104));
+        settingsSafetyLabel.setGravity(Gravity.CENTER_VERTICAL);
+        settingsSafetyLabel.setPadding(dp(6), 0, 0, 0);
+        settingsSafetyLabel.setVisibility(View.GONE);
+        driveConsole.addView(settingsSafetyLabel,
+                new LinearLayout.LayoutParams(dp(175), -1));
         arm.setOnCheckedChangeListener((view, checked) -> {
             if (changingConfig) return;
             if (checked) {
@@ -516,6 +608,7 @@ public final class MainActivity extends Activity {
         tuningActive.setPadding(dp(6), 0, 0, 0);
         tuningActive.setLayoutParams(new LinearLayout.LayoutParams(dp(190), -1));
 
+        settingsCuts[5] = root.getChildCount(); // control hold explanation
         label(root, "3. Gemini 3.8 Live（手機麥克風 + 車頭畫面）", 17).setTypeface(null, Typeface.BOLD);
         label(root, "使用自己的 API Key；輸入後會加密保存於本機，不寫入 Log。連小車 Wi-Fi 時請保持行動數據。", 12);
         key = field(root, "Gemini API Key（自動加密保存）", LocalSecretStore.readGeminiKey(this), false);
@@ -555,6 +648,7 @@ public final class MainActivity extends Activity {
         transcript = label(root, "對話顯示區（僅保留最新訊息）", 13);
         transcript.setMinHeight(dp(50));
 
+        settingsCuts[6] = root.getChildCount(); // Gemini Live
         label(root, "4. Debug（adb logcat -s CrewCar:D）", 17).setTypeface(null, Typeface.BOLD);
         row(root, button("匯出 Debug 文字", v -> {
             Intent send = new Intent(Intent.ACTION_SEND);
@@ -564,6 +658,8 @@ public final class MainActivity extends Activity {
         }), button("重新檢查網路", v -> routes.diagnostics()));
         logs = label(root, "", 11);
         logs.setTextIsSelectable(true);
+        settingsCuts[7] = root.getChildCount(); // debug
+        repartitionSettings(root, settingsCuts);
         switchingCarProfile = true;
         restoreVehicleSettings();
         switchingCarProfile = false;
@@ -571,6 +667,54 @@ public final class MainActivity extends Activity {
         updateNetworkStatus();
         updateTxStatus();
         updateMode();
+    }
+
+    /**
+     * Build category panels by MOVING existing form Views without reconstructing them.
+     * This keeps all original preference bindings, listeners, spinners and callbacks.
+     * Sections in original order:
+     * vehicle intro, camera, vehicle profile, tuning, protocol, control notes,
+     * Gemini, diagnostics.
+     */
+    private void repartitionSettings(LinearLayout root, int[] cuts) {
+        if (!SettingsSectionRouter.validCuts(cuts, root.getChildCount()))
+            throw new IllegalStateException("settings section boundaries changed");
+        settingsSections = new LinearLayout[4];
+        for (int i = 0; i < settingsSections.length; i++) {
+            LinearLayout content = new LinearLayout(this);
+            content.setOrientation(LinearLayout.VERTICAL);
+            content.setPadding(0, 0, 0, dp(16));
+            settingsSections[i] = content;
+        }
+        int count = cuts[7];
+        for (int i = 0; i < count; i++) {
+            View element = root.getChildAt(0);
+            root.removeViewAt(0);
+            int chunk = 0;
+            while (chunk < cuts.length - 1 && i >= cuts[chunk]) chunk++;
+            int section = SettingsSectionRouter.sectionForChunk(chunk);
+            settingsSections[section].addView(element);
+        }
+        for (LinearLayout panel : settingsSections) root.addView(panel);
+        setSettingsTab(0);
+    }
+
+    private void setSettingsTab(int selected) {
+        if (settingsSections == null || selected < 0 || selected >= settingsSections.length)
+            return;
+        activeSettingsTab = selected;
+        for (int i = 0; i < settingsSections.length; i++) {
+            boolean active = selected == i;
+            settingsSections[i].setVisibility(active ? View.VISIBLE : View.GONE);
+            if (settingsNavButtons != null && settingsNavButtons[i] != null) {
+                Button button = settingsNavButtons[i];
+                button.setTextColor(active ? Color.WHITE : Color.rgb(28, 45, 60));
+                button.setBackgroundTintList(android.content.res.ColorStateList.valueOf(
+                        active ? Color.rgb(37, 81, 113) : Color.rgb(234, 241, 247)));
+            }
+        }
+        if (settingsScroller != null)
+            settingsScroller.post(() -> settingsScroller.scrollTo(0, 0));
     }
 
     private SeekBar tuningBar(LinearLayout root, String title, int max, int initial) {
@@ -721,9 +865,12 @@ public final class MainActivity extends Activity {
     }
 
     private void updateMode() {
-        if (settingsScroller == null || drivePad == null || modeButton == null) return;
+        if (settingsShell == null || drivePad == null || modeButton == null) return;
         drivePad.setVisibility(drivingMode ? View.VISIBLE : View.GONE);
-        settingsScroller.setVisibility(drivingMode ? View.GONE : View.VISIBLE);
+        settingsShell.setVisibility(drivingMode ? View.GONE : View.VISIBLE);
+        if (arm != null) arm.setVisibility(drivingMode ? View.VISIBLE : View.GONE);
+        if (settingsSafetyLabel != null)
+            settingsSafetyLabel.setVisibility(drivingMode ? View.GONE : View.VISIBLE);
         modeButton.setText(drivingMode ? "設定" : "返回駕駛");
     }
 
