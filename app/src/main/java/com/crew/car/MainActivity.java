@@ -17,6 +17,8 @@ import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.provider.Settings;
 import android.text.InputType;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -39,6 +41,7 @@ import org.json.JSONObject;
 public final class MainActivity extends Activity {
     private static final int MIC_PERMISSION_REQUEST = 101;
     private final Handler main = new Handler(Looper.getMainLooper());
+    private final Runnable saveGeminiKeyLater = this::saveGeminiKeyLocally;
     private final Map<String, EditText> packets = new LinkedHashMap<>();
     private CarLog log;
     private CarNetwork routes;
@@ -109,7 +112,7 @@ public final class MainActivity extends Activity {
         gemini = new GeminiLive(log);
         render();
         log.setListener(s -> runOnUiThread(() -> { if (logs != null) logs.setText(s); }));
-        log.i("APP", "Crew Car v0.1.9; landscape twin-thumb control; 10-100ms intervals; no vehicle ACK");
+        log.i("APP", "Crew Car v0.1.14; Live setup diagnostics and hold-button controls; 10-100ms intervals; no vehicle ACK");
         routes.diagnostics();
     }
 
@@ -272,7 +275,7 @@ public final class MainActivity extends Activity {
         screen.addView(driveConsole, new LinearLayout.LayoutParams(-1, dp(62)));
         TextView heading = label(root, "進階設定與除錯", 17);
         heading.setTypeface(null, Typeface.BOLD);
-        label(root, "橫向駕駛：左手左右轉向、右手前進倒車；兩指可同時操作。進入設定時會先停車上鎖。", 13);
+        label(root, "橫向駕駛：左側左右轉向；右側分別按住前進或倒車，放開即停止。可雙指同時操作；進入設定時會先停車上鎖。", 13);
         row(root, button("開 Wi-Fi 設定", v -> startActivity(new Intent(Settings.ACTION_WIFI_SETTINGS))),
                 button("網路診斷", v -> {
                     routes.diagnostics();
@@ -447,9 +450,17 @@ public final class MainActivity extends Activity {
         tuningActive.setLayoutParams(new LinearLayout.LayoutParams(dp(190), -1));
 
         label(root, "3. Gemini 3.8 Live（手機麥克風 + 車頭畫面）", 17).setTypeface(null, Typeface.BOLD);
-        label(root, "使用自己的 API Key；只放在記憶體，不寫入設定與 Log。連小車 Wi-Fi 時請保持行動數據。", 12);
-        key = field(root, "Gemini API Key（每次連線重新輸入）", "", false);
+        label(root, "使用自己的 API Key；輸入後會加密保存於本機，不寫入 Log。連小車 Wi-Fi 時請保持行動數據。", 12);
+        key = field(root, "Gemini API Key（自動加密保存）", LocalSecretStore.readGeminiKey(this), false);
         key.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        key.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                main.removeCallbacks(saveGeminiKeyLater);
+                main.postDelayed(saveGeminiKeyLater, 500);
+            }
+            @Override public void afterTextChanged(Editable s) {}
+        });
         liveStatus = label(root, "Gemini 尚未連線", 13);
         row(root, button("連線 Live", v -> startGemini()),
                 button("斷線 Live", v -> {
@@ -725,7 +736,8 @@ public final class MainActivity extends Activity {
 
     private void startGemini() {
         String apiKey = key.getText().toString().trim();
-        key.setText(""); // avoid leaving the secret in the view hierarchy
+        main.removeCallbacks(saveGeminiKeyLater);
+        saveGeminiKeyLocally();
         if (apiKey.isEmpty()) {
             liveStatus.setText("請先輸入 Gemini API Key");
             if (driverLiveStatus != null) driverLiveStatus.setText("Gemini Live：未輸入 Key");
@@ -864,6 +876,11 @@ public final class MainActivity extends Activity {
         });
     }
 
+    private void saveGeminiKeyLocally() {
+        if (key != null && !LocalSecretStore.saveGeminiKey(this, key.getText().toString()))
+            log.e("LIVE", "Gemini API Key could not be encrypted and stored locally");
+    }
+
     private long cameraAgeMs() {
         long last = lastCameraFrame;
         return last == 0 ? -1 : Math.max(0, SystemClock.elapsedRealtime() - last);
@@ -897,6 +914,8 @@ public final class MainActivity extends Activity {
 
     @Override protected void onPause() {
         super.onPause();
+        main.removeCallbacks(saveGeminiKeyLater);
+        saveGeminiKeyLocally();
         foreground = false;
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         main.removeCallbacks(cameraMonitor);
@@ -921,6 +940,7 @@ public final class MainActivity extends Activity {
 
     @Override protected void onDestroy() {
         main.removeCallbacks(cameraMonitor);
+        main.removeCallbacks(saveGeminiKeyLater);
         stopCameraReceiver();
         liveConnectToken++;
         routes.releaseCellularForLive();

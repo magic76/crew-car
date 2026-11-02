@@ -7,6 +7,8 @@ import android.media.AudioRecord;
 import android.media.AudioTrack;
 import android.media.MediaRecorder;
 import android.net.Network;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.util.Base64;
 
@@ -16,6 +18,7 @@ import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -23,13 +26,14 @@ import java.util.concurrent.TimeUnit;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
+import okio.ByteString;
 import okhttp3.WebSocket;
 import okhttp3.WebSocketListener;
 
 /**
  * BYOK raw Gemini Live WebSocket: 16 kHz mic, <=1 FPS JPEG, 24 kHz speaker,
  * function calls -> guarded, bounded car motion.
- * API key only exists in memory; never printed/persisted.
+ * Active API key is never logged; persistence is handled by encrypted Android Keystore storage.
  */
 public final class GeminiLive {
     public interface Listener {
@@ -46,7 +50,10 @@ public final class GeminiLive {
     private static final String ENDPOINT =
             "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
     private final CarLog log;
+    private final Handler main = new Handler(Looper.getMainLooper());
     private volatile WebSocket socket;
+    private volatile Runnable setupTimeout;
+    private volatile String terminalStatus;
     private volatile boolean ready;
     private volatile boolean micRunning;
     /** Time of the last JPEG accepted into the Live WebSocket send queue. */
@@ -86,6 +93,7 @@ public final class GeminiLive {
             return;
         }
         this.listener = callback;
+        terminalStatus = null;
         this.ready = false;
         this.lastFrameSent = 0L;
         this.videoFramesQueued = 0L;
@@ -102,29 +110,74 @@ public final class GeminiLive {
         callback.onStatus("Gemini WebSocket 連線中");
         socket = client.newWebSocket(new Request.Builder().url(url).build(), new WebSocketListener() {
             @Override public void onOpen(WebSocket ws, Response response) {
+                if (ws != socket) { ws.close(1000, "stale session"); return; }
                 log.i("LIVE", "WS opened; sending setup");
-                ws.send(setup().toString());
+                if (listener != null) listener.onStatus("WebSocket 已握手，等待 Gemini setupComplete");
+                try {
+                    boolean queued = ws.send(setup().toString());
+                    log.i("LIVE", "setup message queued=" + queued);
+                    if (!queued) {
+                        failSession(ws, "Gemini 連線失敗：設定訊息未能送出", "setup message rejected by WebSocket queue");
+                        return;
+                    }
+                } catch (Exception e) {
+                    failSession(ws, "Gemini 連線失敗：無法建立連線設定", "setup build failed class=" + e.getClass().getSimpleName());
+                    return;
+                }
+                Runnable timeout = () -> {
+                    if (ws == socket && !ready)
+                        failSession(ws, "Gemini 連線失敗：20 秒內未收到 setupComplete", "setup timeout after 20s");
+                };
+                setupTimeout = timeout;
+                main.postDelayed(timeout, 20_000);
             }
             @Override public void onMessage(WebSocket ws, String text) {
                 receive(ws, text);
             }
+            @Override public void onMessage(WebSocket ws, ByteString bytes) {
+                if (ws != socket) return;
+                log.i("LIVE", "binary server frame bytes=" + bytes.size());
+                String body = bytes.utf8();
+                if (body.trim().startsWith("{")) receive(ws, body);
+                else if (!ready)
+                    failSession(ws, "Gemini 連線失敗：收到非預期的二進位回覆",
+                            "unexpected binary server frame before setupComplete bytes=" + bytes.size());
+            }
             @Override public void onFailure(WebSocket ws, Throwable t, Response response) {
                 if (ws != socket) return;
                 ready = false;
+                cancelSetupTimeout();
                 stopMic();
                 speaker.close();
                 // Do NOT log Throwable.getMessage: transport errors may contain auth URL.
                 log.e("LIVE", "WS failed class=" + t.getClass().getSimpleName() +
                         " http=" + (response == null ? "none" : response.code()));
-                if (listener != null) listener.onStatus("Gemini 連線失敗（查看 LIVE Log；確認 API 可使用此模型）");
+                String status = terminalStatus;
+                if (status == null) {
+                    status = "Gemini 連線失敗（" + (response == null ?
+                            t.getClass().getSimpleName() : "HTTP " + response.code()) + "）";
+                    terminalStatus = status;
+                }
+                if (listener != null) listener.onStatus(status);
+            }
+            @Override public void onClosing(WebSocket ws, int code, String reason) {
+                if (ws != socket) return;
+                if (!ready && terminalStatus == null) {
+                    terminalStatus = "Gemini 連線失敗：伺服器在 setup 完成前關閉連線（" + code + "）";
+                    if (listener != null) listener.onStatus(terminalStatus);
+                    log.e("LIVE", "WS closed before setupComplete code=" + code);
+                }
             }
             @Override public void onClosed(WebSocket ws, int code, String reason) {
                 if (ws != socket) return;
                 ready = false;
+                cancelSetupTimeout();
                 stopMic();
                 speaker.close();
                 log.i("LIVE", "WS closed code=" + code);
-                if (listener != null) listener.onStatus("Gemini 已中斷 code=" + code);
+                String status = terminalStatus;
+                if (status == null) status = "Gemini 已中斷 code=" + code;
+                if (listener != null) listener.onStatus(status);
             }
         });
     }
@@ -161,7 +214,22 @@ public final class GeminiLive {
         if (ws != socket) return; // ignore late packets from an old Gemini session
         try {
             JSONObject m = new JSONObject(text);
+            if (!ready && m.names() != null)
+                log.i("LIVE", "pre-setup server frame keys=" + m.names());
+            if (m.has("error")) {
+                JSONObject error = m.optJSONObject("error");
+                String code = error == null ? "unknown" :
+                        error.optString("code", error.optString("status", "unknown"));
+                String safeCode = safeErrorCode(code);
+                String message = error == null ? "" : error.optString("message", "");
+                String category = classifyApiError(message);
+                failSession(ws, "Gemini 連線失敗：" + category + "（" + safeCode + "）",
+                        "server error code=" + safeCode + " category=" + category);
+                return;
+            }
             if (m.has("setupComplete")) {
+                cancelSetupTimeout();
+                terminalStatus = null;
                 ready = true;
                 speaker.start(log);
                 log.i("LIVE", "setupComplete model=3.8-live");
@@ -198,6 +266,43 @@ public final class GeminiLive {
         } catch (Exception e) {
             log.e("LIVE", "message decode error=" + e.getClass().getSimpleName());
         }
+    }
+
+    private void failSession(WebSocket ws, String status, String diagnostic) {
+        if (ws != socket) return;
+        terminalStatus = status;
+        ready = false;
+        cancelSetupTimeout();
+        stopMic();
+        speaker.close();
+        log.e("LIVE", diagnostic);
+        if (listener != null) listener.onStatus(status);
+        ws.close(1000, "setup failed");
+    }
+
+    private void cancelSetupTimeout() {
+        Runnable timeout = setupTimeout;
+        setupTimeout = null;
+        if (timeout != null) main.removeCallbacks(timeout);
+    }
+
+    private static String safeErrorCode(String value) {
+        String safe = value == null ? "unknown" : value.replaceAll("[^A-Za-z0-9_-]", "");
+        if (safe.isEmpty()) return "unknown";
+        return safe.length() > 32 ? safe.substring(0, 32) : safe;
+    }
+
+    private static String classifyApiError(String message) {
+        String lower = message == null ? "" : message.toLowerCase(Locale.US);
+        if (lower.contains("api key") || lower.contains("api_key") || lower.contains("permission"))
+            return "API Key 或權限遭拒";
+        if (lower.contains("quota") || lower.contains("exhausted") || lower.contains("rate limit"))
+            return "API 額度或速率限制";
+        if (lower.contains("model") || lower.contains("not found"))
+            return "模型名稱或模型權限錯誤";
+        if (lower.contains("invalid") || lower.contains("unsupported"))
+            return "Live 設定格式遭拒";
+        return "伺服器拒絕 Live 設定";
     }
 
     private void forwardTranscript(JSONObject obj, String prefix) {
@@ -422,6 +527,8 @@ public final class GeminiLive {
     }
 
     public synchronized void disconnect() {
+        cancelSetupTimeout();
+        terminalStatus = null;
         synchronized (recentToolResponses) { recentToolResponses.clear(); }
         stopMic();
         ready = false;
