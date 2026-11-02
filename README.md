@@ -120,8 +120,14 @@ See [AI voice + pedal lease acceptance](docs/AI_TALK_DRIVE_QA.md).
 
 ## v0.1.16: actual held gas for manual control and AI cruise
 
-- **Manual:** a forward/reverse touch is held until the same finger lifts or Android cancels it, not until a slight touch drift. Independent steering can change without releasing the throttle. A 120ms UI keepalive renews a 1.6s fail-safe manual deadline, while the selected 10–100ms UDP transmission loop sends the actual repeated control packet.
+- **Manual (v0.1.16 history, superseded in v0.1.17):** the experimental pointer latch and 120ms / 1.6s hold mechanism was rolled back due to physical control regression. Use the v0.1.17 manual-control behavior below.
 - **AI:** `set_drive_state` can keep pedal + steering for a default 15s / max 30s without repeated Gemini tool calls. A new `steer_car(left/right/center, hold_ms)` changes only steering for a brief 100–2000ms interval and returns to center, leaving gas held **without braking or extending its deadline**. A legacy pulse tool cannot interrupt an active AI cruise. E-STOP, manual priority, camera/Live stale and Wi-Fi loss fail closed.
 - Fixed pedal is NOT measured or guaranteed speed; this camera-only toy does not have a collision/depth/odometry sensor. Only use on clear private ground with direct supervision and physical STOP in reach.
 
 Updated [tool contracts](docs/GEMINI_TOOLS.md) and [regression QA](docs/AI_TALK_DRIVE_QA.md).
+
+## v0.1.17: restore tested v0.1.14 manual driving mechanism
+
+The hand-operated left/right steering and right-hand forward/reverse buttons were rolled back **exactly to the v0.1.14 touch implementation**. An active accelerator touch stops when the original pointer lifts/cancels **or leaves its selected forward/reverse button area** (you must press the button again). The UI sends a manual lease renewal every **180ms**, and the internal **500ms deadman timeout** restores the previous motor control behavior. The existing car-specific UDP transmitter/tuning still sends packets at the configured period while a manual command is active. User must deliberately arm the car, STOP is unchanged, and motor ACK remains unavailable.
+
+This rollback targets **manual control only**: Gemini Live, AI command tools, Wi-Fi/4G split, camera, KL FPV scaffolding, and other features remain on their current branch code and are intentionally **not** fixed or redesigned yet. Follow [manual rollback QA](docs/MANUAL_CONTROL_ROLLBACK_QA.md).

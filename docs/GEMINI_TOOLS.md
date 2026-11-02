@@ -75,6 +75,6 @@ While Gemini outputs audio, the physical AudioRecord microphone is paused and an
 
 ## v0.1.16 persistent input correction
 
-Manual forward/reverse buttons are physical hold controls: a pointer is captured on DOWN and stays active until UP or CANCEL even after thumb drift. The app refreshes the local watchdog every 120ms while pressed; the serial transmitter emits control UDP continuously at the configured 10–100ms period. UI refresh does not create extra network bursts. A stalled UI that cannot renew the 1.6s manual deadman stops the car.
+**Manual control note:** this v0.1.16 experimental thumb-drift latch and 120ms/1.6s timing were **reverted in v0.1.17**. Current manual behavior is the v0.1.14 button view, 180ms renewal and 500ms deadman. Gemini and AI tool contracts in this document were NOT changed by this rollback.
 
 Gemini should use `set_drive_state(steering=center, throttle=forward)` once for normal user-authorized forward movement (default 15s, absolute maximum 30s). Its local sender maintains throttle independently. For key-point turns use `steer_car(direction=left/right, hold_ms=550)`, which briefly turns then re-centers steering while throttle continues; the original motor hold deadline is NOT extended. `set_drive_state(...,throttle=keep)` can also update or latch steering. If `drive_car` is mistakenly called during cruise, it is **blocked without braking** so the AI can switch tools. STOP/lock/E-STOP/manual takeover always cancel cruise. This is NOT actual speed-regulated driving.
