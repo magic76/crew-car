@@ -737,6 +737,9 @@ public final class MainActivity extends Activity {
         // Normal Internet Wi-Fi and already-active cellular (without car Wi-Fi)
         // do not need a dedicated cellular request for a read-only Live session.
         if (initial != null && (car == null || routes.isValidatedInternet(car))) {
+            // Validated ordinary Wi-Fi does not need to reserve the mobile radio.
+            if (car != null && routes.isValidatedInternet(car))
+                routes.releaseCellularForLive();
             connectGeminiOnNetwork(apiKey, initial);
             return;
         }
@@ -762,7 +765,10 @@ public final class MainActivity extends Activity {
     private void connectGeminiOnNetwork(String apiKey, Network route) {
         gemini.connect(apiKey, route, new GeminiLive.Listener() {
             @Override public void onStatus(String status) {
-                if (status.contains("失敗") || status.contains("中斷")) control.emergencyStop();
+                if (status.contains("失敗") || status.contains("中斷")) {
+                    control.emergencyStop();
+                    main.post(routes::releaseCellularForLive);
+                }
                 runOnUiThread(() -> {
                     liveStatus.setText(status);
                     if (driverLiveStatus != null)
@@ -898,6 +904,10 @@ public final class MainActivity extends Activity {
         if (control != null) control.disarm();
         if (arm != null) uncheck();
         if (gemini != null) gemini.stopMic();
+        if (!gemini.ready() && routes.cellularRequestActive()) {
+            liveConnectToken++;
+            routes.releaseCellularForLive();
+        }
         stopCameraReceiver();
     }
 
