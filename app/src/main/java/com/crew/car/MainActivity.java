@@ -131,7 +131,8 @@ public final class MainActivity extends Activity {
             if (visionEnabled && drivingMode && cameraRunning &&
                     currentCameraAdapter == 0 && hevcPreview != null &&
                     hevcPreview.isAvailable() && hevcPreview.getWidth() > 0 &&
-                    hevcPreview.getHeight() > 0 && !crewVision.busy()) {
+                    hevcPreview.getHeight() > 0 && cameraAgeMs() >= 0 &&
+                    cameraAgeMs() <= 1500 && !crewVision.busy()) {
                 try {
                     int width = 320;
                     int height = Math.max(1, Math.round(width *
@@ -1409,6 +1410,7 @@ public final class MainActivity extends Activity {
                         "live_video_frames_queued", gemini.liveVideoFramesQueued(),
                         "scene_recognition_available_here", visionEnabled,
                         "local_person_detector_enabled", visionEnabled,
+                        "local_person_detector_ready", crewVision != null && crewVision.ready(),
                         "people_detected", visionOverlay == null ? 0 : visionOverlay.personCount(),
                         "selected_target", visionOverlay != null && visionOverlay.hasSelection(),
                         "selected_target_lost", visionOverlay != null && visionOverlay.targetLost(),
