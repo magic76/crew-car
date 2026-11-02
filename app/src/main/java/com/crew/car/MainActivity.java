@@ -559,6 +559,15 @@ public final class MainActivity extends Activity {
         arm.setText("解鎖駕駛");
         arm.setTextSize(13);
         driveConsole.addView(arm, new LinearLayout.LayoutParams(dp(126), -1));
+        settingsSafetyLabel = new TextView(this);
+        settingsSafetyLabel.setText("設定模式 · 車輛已上鎖");
+        settingsSafetyLabel.setTextSize(12);
+        settingsSafetyLabel.setTextColor(Color.rgb(75, 91, 104));
+        settingsSafetyLabel.setGravity(Gravity.CENTER_VERTICAL);
+        settingsSafetyLabel.setPadding(dp(6), 0, 0, 0);
+        settingsSafetyLabel.setVisibility(View.GONE);
+        driveConsole.addView(settingsSafetyLabel,
+                new LinearLayout.LayoutParams(dp(175), -1));
         arm.setOnCheckedChangeListener((view, checked) -> {
             if (changingConfig) return;
             if (checked) {
@@ -861,9 +870,12 @@ public final class MainActivity extends Activity {
     }
 
     private void updateMode() {
-        if (settingsScroller == null || drivePad == null || modeButton == null) return;
+        if (settingsShell == null || drivePad == null || modeButton == null) return;
         drivePad.setVisibility(drivingMode ? View.VISIBLE : View.GONE);
-        settingsScroller.setVisibility(drivingMode ? View.GONE : View.VISIBLE);
+        settingsShell.setVisibility(drivingMode ? View.GONE : View.VISIBLE);
+        if (arm != null) arm.setVisibility(drivingMode ? View.VISIBLE : View.GONE);
+        if (settingsSafetyLabel != null)
+            settingsSafetyLabel.setVisibility(drivingMode ? View.GONE : View.VISIBLE);
         modeButton.setText(drivingMode ? "設定" : "返回駕駛");
     }
 
