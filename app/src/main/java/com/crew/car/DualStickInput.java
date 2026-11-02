@@ -10,21 +10,31 @@ package com.crew.car;
 public final class DualStickInput {
     public static final float SIDE_FRACTION = 0.26f;
     public static final float DEAD_ZONE = 0.26f;
+    private float sideFraction = SIDE_FRACTION;
+    private float deadZone = DEAD_ZONE;
     private int steeringPointer = -1;
     private int throttlePointer = -1;
     private int steering;
     private int throttle;
 
+    public void configure(float sideFraction, float deadZone) {
+        if (sideFraction < .18f || sideFraction > .26f ||
+                deadZone < .15f || deadZone > .35f)
+            throw new IllegalArgumentException("input geometry invalid");
+        cancel();
+        this.sideFraction = sideFraction;
+        this.deadZone = deadZone;
+    }
     public int steering() { return steering; }
     public int throttle() { return throttle; }
     public boolean hasActivePointer() { return steeringPointer != -1 || throttlePointer != -1; }
 
     public void down(int id, float x, float y, float width, float height) {
         if (id < 0 || !valid(x, y, width, height)) return;
-        if (x < width * SIDE_FRACTION && steeringPointer == -1) {
+        if (x < width * sideFraction && steeringPointer == -1) {
             steeringPointer = id;
-            steering = mapAxis(x, width * SIDE_FRACTION, false);
-        } else if (x >= width * (1f - SIDE_FRACTION) && throttlePointer == -1) {
+            steering = mapAxis(x, width * sideFraction, false);
+        } else if (x >= width * (1f - sideFraction) && throttlePointer == -1) {
             throttlePointer = id;
             throttle = mapAxis(y, height, true);
         }
@@ -38,10 +48,10 @@ public final class DualStickInput {
         // A finger leaving its own zone centers that axis instead of sustaining motion
         // across the video or accidentally taking control of the opposite thumb.
         if (id == steeringPointer)
-            steering = x >= 0f && x < width * SIDE_FRACTION && y >= 0f && y <= height
-                    ? mapAxis(x, width * SIDE_FRACTION, false) : 0;
+            steering = x >= 0f && x < width * sideFraction && y >= 0f && y <= height
+                    ? mapAxis(x, width * sideFraction, false) : 0;
         if (id == throttlePointer)
-            throttle = x >= width * (1f - SIDE_FRACTION) && x <= width &&
+            throttle = x >= width * (1f - sideFraction) && x <= width &&
                     y >= 0f && y <= height
                     ? mapAxis(y, height, true) : 0;
     }
@@ -70,10 +80,10 @@ public final class DualStickInput {
                 width > 0f && height > 0f;
     }
 
-    private static int mapAxis(float coordinate, float extent, boolean inverted) {
+    private int mapAxis(float coordinate, float extent, boolean inverted) {
         float normalized = (coordinate - extent / 2f) / (extent / 2f);
-        int direction = normalized < -DEAD_ZONE ? -1 :
-                normalized > DEAD_ZONE ? 1 : 0;
+        int direction = normalized < -deadZone ? -1 :
+                normalized > deadZone ? 1 : 0;
         return inverted ? -direction : direction;
     }
 }
