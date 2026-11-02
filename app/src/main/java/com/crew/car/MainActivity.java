@@ -240,11 +240,11 @@ public final class MainActivity extends Activity {
         statusStrip.setOrientation(LinearLayout.HORIZONTAL);
         statusStrip.setGravity(Gravity.CENTER_VERTICAL);
         statusStrip.setBackgroundColor(Color.rgb(233, 241, 246));
-        banner.addView(statusStrip, new LinearLayout.LayoutParams(-1, dp(25)));
-        netStatus = label(statusStrip, "Wi-Fi：檢查中", 10);
-        cameraStatus = label(statusStrip, "FPV：未連線", 10);
-        driverLiveStatus = label(statusStrip, "AI：未連線", 10);
-        aiDriveStatus = label(statusStrip, "油門：停止", 10);
+        banner.addView(statusStrip, new LinearLayout.LayoutParams(-1, dp(28)));
+        netStatus = label(statusStrip, "Wi-Fi：檢查中", 12);
+        cameraStatus = label(statusStrip, "FPV：未連線", 12);
+        driverLiveStatus = label(statusStrip, "AI：未連線", 12);
+        aiDriveStatus = label(statusStrip, "油門：停止", 12);
         TextView[] instruments = {netStatus, cameraStatus, driverLiveStatus, aiDriveStatus};
         float[] weights = {1f, 1.25f, 1.25f, 1.3f};
         for (int i = 0; i < instruments.length; i++) {
@@ -253,7 +253,7 @@ public final class MainActivity extends Activity {
             status.setEllipsize(android.text.TextUtils.TruncateAt.END);
             status.setGravity(Gravity.CENTER_VERTICAL);
             status.setPadding(dp(5), 0, dp(3), 0);
-            status.setLayoutParams(new LinearLayout.LayoutParams(0, dp(25), weights[i]));
+            status.setLayoutParams(new LinearLayout.LayoutParams(0, dp(28), weights[i]));
         }
 
         cockpit = new FrameLayout(this);
@@ -316,6 +316,7 @@ public final class MainActivity extends Activity {
             }
             if (!control.armed()) {
                 drivePad.cancelInput();
+                drivePad.setControlsAvailable(false);
                 log.e("SAFETY", "dual-stick input blocked: locked");
                 return;
             }
