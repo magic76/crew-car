@@ -2,6 +2,7 @@ package com.crew.car;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
@@ -93,6 +94,8 @@ public final class MainActivity extends Activity {
     private ScrollView settingsScroller;
     private Button modeButton;
     private DualStickDriveView drivePad;
+    private FrameLayout cockpit, cameraFrame;
+    private DriverLayoutConfig driverLayout = DriverLayoutConfig.defaults();
     private boolean drivingMode = true;
     private boolean cameraWanted = true;
     private boolean cameraManualRequested;
@@ -124,6 +127,7 @@ public final class MainActivity extends Activity {
             maybeStartCamera();
             updateNetworkStatus();
             updateTxStatus();
+            if (drivePad != null) drivePad.setControlsAvailable(control.armed());
             main.postDelayed(this, 2500);
         }
     };
@@ -138,6 +142,7 @@ public final class MainActivity extends Activity {
         camera = new CameraStream(routes, log);
         wltoysVideo = new WltoysVideoStream(routes, log);
         gemini = new GeminiLive(log);
+        driverLayout = loadDriverLayout();
         control.setAiSafetyGate(() -> foreground && gemini.ready() &&
                 routes.wifi() != null && cameraAgeMs() >= 0 &&
                 cameraAgeMs() <= 2500 && gemini.liveVideoAgeMs() >= 0 &&
@@ -226,28 +231,42 @@ public final class MainActivity extends Activity {
         Button retryCamera = button("重連鏡頭", v -> reconnectCamera());
         retryCamera.setTextSize(12);
         topRow.addView(retryCamera, new LinearLayout.LayoutParams(dp(84), dp(38)));
+        Button controlLayoutButton = button("操控", v -> openControlLayoutDialog());
+        topRow.addView(controlLayoutButton, new LinearLayout.LayoutParams(dp(66), dp(38)));
         modeButton = button("設定", v -> toggleMode());
         topRow.addView(modeButton, new LinearLayout.LayoutParams(dp(76), dp(38)));
         banner.addView(topRow);
-        netStatus = label(banner, "檢查網路中…", 11);
-        cameraStatus = label(banner, "攝影機未連線", 11);
-        driverLiveStatus = label(banner, "Gemini Live：尚未連線", 11);
-        aiDriveStatus = label(banner, "AI 油門保持：未啟用", 11);
-        for (TextView status : new TextView[]{netStatus, cameraStatus, driverLiveStatus, aiDriveStatus}) {
+        LinearLayout statusStrip = new LinearLayout(this);
+        statusStrip.setOrientation(LinearLayout.HORIZONTAL);
+        statusStrip.setGravity(Gravity.CENTER_VERTICAL);
+        statusStrip.setBackgroundColor(Color.rgb(233, 241, 246));
+        banner.addView(statusStrip, new LinearLayout.LayoutParams(-1, dp(25)));
+        netStatus = label(statusStrip, "Wi-Fi：檢查中", 10);
+        cameraStatus = label(statusStrip, "FPV：未連線", 10);
+        driverLiveStatus = label(statusStrip, "AI：未連線", 10);
+        aiDriveStatus = label(statusStrip, "油門：停止", 10);
+        TextView[] instruments = {netStatus, cameraStatus, driverLiveStatus, aiDriveStatus};
+        float[] weights = {1f, 1.25f, 1.25f, 1.3f};
+        for (int i = 0; i < instruments.length; i++) {
+            TextView status = instruments[i];
             status.setSingleLine(true);
             status.setEllipsize(android.text.TextUtils.TruncateAt.END);
-            status.setPadding(0, 0, 0, 0);
+            status.setGravity(Gravity.CENTER_VERTICAL);
+            status.setPadding(dp(5), 0, dp(3), 0);
+            status.setLayoutParams(new LinearLayout.LayoutParams(0, dp(25), weights[i]));
         }
 
-        FrameLayout cockpit = new FrameLayout(this);
+        cockpit = new FrameLayout(this);
         cockpit.setBackgroundColor(Color.rgb(12, 20, 32));
         screen.addView(cockpit, new LinearLayout.LayoutParams(-1, 0, 1));
-        FrameLayout cameraFrame = new FrameLayout(this);
+        cameraFrame = new FrameLayout(this);
         cameraFrame.setBackgroundColor(Color.rgb(22, 32, 46));
         int videoWidth = Math.round(getResources().getDisplayMetrics().widthPixels *
-                (1f - 2f * DualStickInput.SIDE_FRACTION));
+                driverLayout.videoFraction());
         cockpit.addView(cameraFrame,
                 new FrameLayout.LayoutParams(videoWidth, -1, Gravity.CENTER));
+        cockpit.addOnLayoutChangeListener((v, left, top, right, bottom,
+                oldLeft, oldTop, oldRight, oldBottom) -> updateCameraWidth());
 
         preview = new ImageView(this);
         preview.setBackgroundColor(Color.rgb(22, 32, 46));
@@ -305,6 +324,8 @@ public final class MainActivity extends Activity {
             if (result.startsWith("blocked")) log.e("SAFETY", result);
             else main.postDelayed(manualPulse, 180);
         });
+        drivePad.setLayoutConfig(driverLayout);
+        drivePad.setControlsAvailable(false);
         cockpit.addView(drivePad, new FrameLayout.LayoutParams(-1, -1));
         // Settings are an overlay; the TextureView is not detached or restarted.
         cockpit.addView(settingsScroller, new FrameLayout.LayoutParams(-1, -1));
@@ -317,7 +338,7 @@ public final class MainActivity extends Activity {
         screen.addView(driveConsole, new LinearLayout.LayoutParams(-1, dp(62)));
         TextView heading = label(root, "進階設定與除錯", 17);
         heading.setTypeface(null, Typeface.BOLD);
-        label(root, "橫向駕駛：左側左右轉向；右側分別按住前進或倒車，放開即停止。可雙指同時操作；進入設定時會先停車上鎖。", 13);
+        label(root, "橫向駕駛：左側可選大按鍵或搖桿；右側按住前進／倒車。駕駛頁「操控」可調整觸控版面（調整時自動 STOP 上鎖）。", 13);
         row(root, button("開 Wi-Fi 設定", v -> startActivity(new Intent(Settings.ACTION_WIFI_SETTINGS))),
                 button("網路診斷", v -> {
                     routes.diagnostics();
@@ -471,10 +492,12 @@ public final class MainActivity extends Activity {
                     uncheck();
                 } else {
                     getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                    drivePad.setControlsAvailable(true);
                     updateTuningPreview();
                 }
             } else {
                 getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                drivePad.setControlsAvailable(false);
                 releaseManualInputs();
                 control.disarm();
             }
@@ -706,12 +729,9 @@ public final class MainActivity extends Activity {
     private void updateNetworkStatus() {
         if (netStatus != null) {
             Network wifi = routes.wifi();
-            netStatus.setText(activeProfile.label + "｜小車 Wi-Fi：" +
-                    (wifi == null ? "未連線" : "有連線") +
-                    "  |  Gemini 網路：" +
-                    (routes.internet(wifi) != null ? "可用" :
-                            routes.cellularRequestActive() ? "準備行動數據中" : "不可用") +
-                    "  |  車輛回執：未支援");
+            netStatus.setText(wifi == null ? "● Wi-Fi 未連" : "● Wi-Fi 已連");
+            netStatus.setTextColor(wifi == null ? Color.rgb(160, 60, 55) :
+                    Color.rgb(32, 116, 98));
         }
     }
 
@@ -719,6 +739,7 @@ public final class MainActivity extends Activity {
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         changingConfig = true;
         arm.setChecked(false);
+        if (drivePad != null) drivePad.setControlsAvailable(false);
         changingConfig = false;
         releaseManualInputs();
         control.disarm();
@@ -864,6 +885,7 @@ public final class MainActivity extends Activity {
 
     private void emergencyStopAndLock() {
         releaseManualInputs();
+        if (drivePad != null) drivePad.setControlsAvailable(false);
         control.disarm();
         control.emergencyStop();
         if (arm != null && arm.isChecked()) {
