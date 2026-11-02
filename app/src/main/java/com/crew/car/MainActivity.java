@@ -56,7 +56,7 @@ public final class MainActivity extends Activity {
     private CrewVision crewVision;
     private VisionOverlay visionOverlay;
     private Button visionButton, followButton;
-    private boolean visionEnabled;
+    private volatile boolean visionEnabled;
     private long followLastLogAt;
     private Button quickTalkButton, interruptButton;
     private TextView aiDriveStatus;
@@ -112,11 +112,11 @@ public final class MainActivity extends Activity {
     private DualStickDriveView drivePad;
     private FrameLayout cockpit, cameraFrame;
     private DriverLayoutConfig driverLayout = DriverLayoutConfig.defaults();
-    private boolean drivingMode = true;
+    private volatile boolean drivingMode = true;
     private boolean cameraWanted = true;
     private boolean cameraManualRequested;
     private volatile boolean foreground;
-    private boolean cameraRunning;
+    private volatile boolean cameraRunning;
     private Network cameraNetwork;
     private long cameraSession;
     private int heldSteer, heldThrottle;
