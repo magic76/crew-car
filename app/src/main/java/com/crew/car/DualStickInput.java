@@ -35,8 +35,15 @@ public final class DualStickInput {
             up(id);
             return;
         }
-        if (id == steeringPointer) steering = mapAxis(x, width * SIDE_FRACTION, false);
-        if (id == throttlePointer) throttle = mapAxis(y, height, true);
+        // A finger leaving its own zone centers that axis instead of sustaining motion
+        // across the video or accidentally taking control of the opposite thumb.
+        if (id == steeringPointer)
+            steering = x >= 0f && x < width * SIDE_FRACTION && y >= 0f && y <= height
+                    ? mapAxis(x, width * SIDE_FRACTION, false) : 0;
+        if (id == throttlePointer)
+            throttle = x >= width * (1f - SIDE_FRACTION) && x <= width &&
+                    y >= 0f && y <= height
+                    ? mapAxis(y, height, true) : 0;
     }
 
     public void up(int id) {
