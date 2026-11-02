@@ -9,12 +9,15 @@ import android.graphics.Color;
 import android.graphics.Matrix;
 import android.graphics.Typeface;
 import android.os.Bundle;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.net.Network;
 import android.graphics.SurfaceTexture;
 import android.view.WindowManager;
+import android.view.WindowInsets;
+import android.graphics.Insets;
 import android.widget.FrameLayout;
 import android.provider.Settings;
 import android.text.InputType;
@@ -92,6 +95,11 @@ public final class MainActivity extends Activity {
     private volatile int currentCameraAdapter;
     private boolean changingConfig;
     private ScrollView settingsScroller;
+    private LinearLayout settingsShell;
+    private LinearLayout[] settingsSections;
+    private Button[] settingsNavButtons;
+    private TextView settingsSafetyLabel;
+    private int activeSettingsTab = 0;
     private Button modeButton;
     private DualStickDriveView drivePad;
     private FrameLayout cockpit, cameraFrame;
@@ -201,11 +209,50 @@ public final class MainActivity extends Activity {
         return getPreferences(MODE_PRIVATE).getString(name, fallback);
     }
 
+    /**
+     * Android 15 edge-to-edge plus pre-30 landscape navigation/cutout handling.
+     * Keep all driver buttons INSIDE the platform-provided safe viewport.
+     */
+    private void applySystemSafeInsets(View root) {
+        if (Build.VERSION.SDK_INT >= 30) {
+            getWindow().setDecorFitsSystemWindows(false);
+        } else {
+            getWindow().getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE |
+                    View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
+                    View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
+        }
+        getWindow().setStatusBarColor(Color.TRANSPARENT);
+        getWindow().setNavigationBarColor(Color.TRANSPARENT);
+        root.setOnApplyWindowInsetsListener((view, windowInsets) -> {
+            int left, top, right, bottom;
+            if (Build.VERSION.SDK_INT >= 30) {
+                Insets bounds = windowInsets.getInsets(
+                        WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                left = bounds.left;
+                top = bounds.top;
+                right = bounds.right;
+                bottom = bounds.bottom;
+            } else {
+                left = windowInsets.getSystemWindowInsetLeft();
+                top = windowInsets.getSystemWindowInsetTop();
+                right = windowInsets.getSystemWindowInsetRight();
+                bottom = windowInsets.getSystemWindowInsetBottom();
+            }
+            if (view.getPaddingLeft() != left || view.getPaddingTop() != top ||
+                    view.getPaddingRight() != right || view.getPaddingBottom() != bottom)
+                view.setPadding(left, top, right, bottom);
+            return windowInsets;
+        });
+        root.requestApplyInsets();
+    }
+
     private void render() {
         LinearLayout screen = new LinearLayout(this);
         screen.setOrientation(LinearLayout.VERTICAL);
         screen.setBackgroundColor(Color.rgb(248, 250, 252));
         setContentView(screen);
+        applySystemSafeInsets(screen);
         LinearLayout banner = new LinearLayout(this);
         banner.setPadding(dp(8), dp(1), dp(8), dp(1));
         banner.setOrientation(LinearLayout.VERTICAL);
@@ -303,7 +350,29 @@ public final class MainActivity extends Activity {
         root.setPadding(dp(16), dp(15), dp(16), dp(32));
         root.setBackgroundColor(Color.rgb(248, 250, 252));
         settingsScroller.addView(root);
-        settingsScroller.setVisibility(View.GONE);
+        settingsShell = new LinearLayout(this);
+        settingsShell.setOrientation(LinearLayout.HORIZONTAL);
+        settingsShell.setBackgroundColor(Color.rgb(248, 250, 252));
+        LinearLayout settingsNavigation = new LinearLayout(this);
+        settingsNavigation.setOrientation(LinearLayout.VERTICAL);
+        settingsNavigation.setPadding(dp(5), dp(8), dp(5), dp(5));
+        settingsNavigation.setBackgroundColor(Color.rgb(228, 236, 244));
+        settingsShell.addView(settingsNavigation,
+                new LinearLayout.LayoutParams(dp(184), -1));
+        settingsShell.addView(settingsScroller,
+                new LinearLayout.LayoutParams(0, -1, 1));
+        String[] categories = {"車輛與連線", "操控設定", "AI 與攝影機", "進階與診斷"};
+        settingsNavButtons = new Button[categories.length];
+        for (int i = 0; i < categories.length; i++) {
+            final int index = i;
+            Button nav = button(categories[i], v -> setSettingsTab(index));
+            nav.setTextSize(13);
+            nav.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+            settingsNavigation.addView(nav,
+                    new LinearLayout.LayoutParams(-1, dp(47)));
+            settingsNavButtons[i] = nav;
+        }
+        settingsShell.setVisibility(View.GONE);
         // This single view owns BOTH touch pointers; no two-button multi-touch conflicts.
         drivePad = new DualStickDriveView(this, (steer, throttle) -> {
             heldSteer = steer;
@@ -329,7 +398,7 @@ public final class MainActivity extends Activity {
         drivePad.setControlsAvailable(false);
         cockpit.addView(drivePad, new FrameLayout.LayoutParams(-1, -1));
         // Settings are an overlay; the TextureView is not detached or restarted.
-        cockpit.addView(settingsScroller, new FrameLayout.LayoutParams(-1, -1));
+        cockpit.addView(settingsShell, new FrameLayout.LayoutParams(-1, -1));
 
         LinearLayout driveConsole = new LinearLayout(this);
         driveConsole.setOrientation(LinearLayout.HORIZONTAL);
@@ -337,9 +406,9 @@ public final class MainActivity extends Activity {
         driveConsole.setPadding(dp(8), dp(2), dp(8), dp(2));
         driveConsole.setBackgroundColor(Color.rgb(232, 239, 246));
         screen.addView(driveConsole, new LinearLayout.LayoutParams(-1, dp(62)));
-        TextView heading = label(root, "進階設定與除錯", 17);
+        TextView heading = label(root, "車輛與連線", 17);
         heading.setTypeface(null, Typeface.BOLD);
-        label(root, "橫向駕駛：左側可選大按鍵或搖桿；右側按住前進／倒車。駕駛頁「操控」可調整觸控版面（調整時自動 STOP 上鎖）。", 13);
+        label(root, "選擇車型並確認 Wi-Fi。進入設定時車輛會先停止並上鎖，返回駕駛後再解鎖。", 13);
         row(root, button("開 Wi-Fi 設定", v -> startActivity(new Intent(Settings.ACTION_WIFI_SETTINGS))),
                 button("網路診斷", v -> {
                     routes.diagnostics();
