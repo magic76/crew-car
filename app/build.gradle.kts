@@ -2,6 +2,8 @@ plugins {
     id("com.android.application")
 }
 
+val visionAssetsDir = layout.buildDirectory.dir("generated/crewvision-assets")
+
 android {
     namespace = "com.crew.car"
     compileSdk = 35
@@ -34,7 +36,6 @@ dependencies {
  *  not on the offline car Wi-Fi. Fail closed if it is missing or not a TFLite file.
  *  Cached under build/; run Gradle online for the initial APK build.
  */
-val visionAssetsDir = layout.buildDirectory.dir("generated/crewvision-assets")
 val prepareCrewVisionModel by tasks.registering {
     val model = visionAssetsDir.map { it.file("efficientdet_lite0.tflite") }
     outputs.file(model)
