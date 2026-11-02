@@ -726,6 +726,104 @@ public final class MainActivity extends Activity {
         modeButton.setText(drivingMode ? "設定" : "返回駕駛");
     }
 
+    private DriverLayoutConfig loadDriverLayout() {
+        android.content.SharedPreferences p = getPreferences(MODE_PRIVATE);
+        try {
+            return new DriverLayoutConfig(p.getInt("driver_side", 20),
+                    p.getInt("driver_gap", 10), p.getInt("driver_offset", 0),
+                    p.getInt("driver_deadzone", 26), p.getBoolean("driver_buttons", true),
+                    p.getBoolean("driver_haptics", true));
+        } catch (IllegalArgumentException ignored) {
+            return DriverLayoutConfig.defaults();
+        }
+    }
+
+    private void saveDriverLayout(DriverLayoutConfig cfg) {
+        getPreferences(MODE_PRIVATE).edit()
+                .putInt("driver_side", cfg.sidePercent).putInt("driver_gap", cfg.gapDp)
+                .putInt("driver_offset", cfg.offsetDp)
+                .putInt("driver_deadzone", cfg.deadZonePercent)
+                .putBoolean("driver_buttons", cfg.buttonSteering)
+                .putBoolean("driver_haptics", cfg.haptics).apply();
+    }
+
+    /** The camera resizes with the actual cockpit width, not screen metrics. */
+    private void updateCameraWidth() {
+        if (cockpit == null || cameraFrame == null || cockpit.getWidth() <= 0) return;
+        int width = Math.round(cockpit.getWidth() * driverLayout.videoFraction());
+        FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) cameraFrame.getLayoutParams();
+        if (lp.width != width) {
+            lp.width = width;
+            lp.gravity = Gravity.CENTER;
+            cameraFrame.setLayoutParams(lp);
+        }
+    }
+
+    private void visualSlider(LinearLayout box, String title, int min, int max,
+                              int value, java.util.function.IntConsumer change) {
+        TextView info = label(box, title + "：" + value, 13);
+        SeekBar slider = new SeekBar(this);
+        slider.setMax(max - min);
+        slider.setProgress(value - min);
+        box.addView(slider, new LinearLayout.LayoutParams(-1, dp(33)));
+        slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
+                int selected = min + progress;
+                info.setText(title + "：" + selected);
+                change.accept(selected);
+            }
+            @Override public void onStartTrackingTouch(SeekBar bar) {}
+            @Override public void onStopTrackingTouch(SeekBar bar) {}
+        });
+    }
+
+    /** Lightweight quick-settings popup; the main Settings page will be redesigned separately. */
+    private void openControlLayoutDialog() {
+        emergencyStopAndLock(); // changing hit targets during motion is unsafe
+        int[] side = {driverLayout.sidePercent}, gap = {driverLayout.gapDp};
+        int[] offset = {driverLayout.offsetDp}, deadzone = {driverLayout.deadZonePercent};
+        ScrollView scroller = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setPadding(dp(16), dp(8), dp(16), dp(12));
+        box.setOrientation(LinearLayout.VERTICAL);
+        scroller.addView(box);
+        label(box, "轉向方式（套用後需重新解鎖）", 13);
+        Spinner mode = new Spinner(this);
+        mode.setAdapter(new ArrayAdapter<>(this,
+                android.R.layout.simple_spinner_dropdown_item,
+                new String[]{"左右大按鍵", "虛擬搖桿"}));
+        mode.setSelection(driverLayout.buttonSteering ? 0 : 1);
+        box.addView(mode, new LinearLayout.LayoutParams(-1, dp(46)));
+        visualSlider(box, "控制區寬度 %", 18, 26, side[0], v -> side[0] = v);
+        visualSlider(box, "油門按鍵間距 dp", 8, 30, gap[0], v -> gap[0] = v);
+        visualSlider(box, "油門上下位置 dp", -24, 24, offset[0], v -> offset[0] = v);
+        visualSlider(box, "搖桿死區 %", 15, 35, deadzone[0], v -> deadzone[0] = v);
+        CheckBox haptic = new CheckBox(this);
+        haptic.setText("啟用輕微觸覺回饋");
+        haptic.setChecked(driverLayout.haptics);
+        box.addView(haptic);
+        label(box, "僅影響觸控版面，不變更馬達封包、續控與安全逾時。", 12);
+        new AlertDialog.Builder(this)
+                .setTitle("駕駛操控版面")
+                .setView(scroller)
+                .setNegativeButton("取消", null)
+                .setNeutralButton("恢復預設", (d, w) -> applyDriverLayout(DriverLayoutConfig.defaults()))
+                .setPositiveButton("套用", (d, w) -> applyDriverLayout(new DriverLayoutConfig(
+                        side[0], gap[0], offset[0], deadzone[0],
+                        mode.getSelectedItemPosition() == 0, haptic.isChecked())))
+                .show();
+    }
+
+    private void applyDriverLayout(DriverLayoutConfig cfg) {
+        emergencyStopAndLock();
+        driverLayout = cfg;
+        saveDriverLayout(cfg);
+        if (drivePad != null) drivePad.setLayoutConfig(cfg);
+        updateCameraWidth();
+        log.i("UI", "driver layout changed side=" + cfg.sidePercent +
+                "% steeringButtons=" + cfg.buttonSteering + " no motor-timing changes");
+    }
+
     private void updateNetworkStatus() {
         if (netStatus != null) {
             Network wifi = routes.wifi();
