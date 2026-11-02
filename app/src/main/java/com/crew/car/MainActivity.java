@@ -5,6 +5,7 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
+import android.graphics.Matrix;
 import android.graphics.Typeface;
 import android.os.Bundle;
 import android.os.Handler;
@@ -210,10 +211,12 @@ public final class MainActivity extends Activity {
         cameraFrame.addView(hevcPreview, new FrameLayout.LayoutParams(-1, -1));
         hevcPreview.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
             @Override public void onSurfaceTextureAvailable(SurfaceTexture surface, int w, int h) {
+                fitCameraAspect(w, h);
                 log.i("CAM", "TextureView available; camera can start");
                 maybeStartCamera();
             }
             @Override public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int w, int h) {
+                fitCameraAspect(w, h);
                 log.i("CAM", "TextureView size=" + w + "x" + h);
             }
             @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) {
@@ -528,6 +531,20 @@ public final class MainActivity extends Activity {
                     active.steeringPercent + "%｜油門" + active.throttlePercent +
                     "%\n（本機設定）");
         }
+    }
+
+    /** Keep the 1280x720 H.265 decoder surface in 16:9 without stretching it. */
+    private void fitCameraAspect(int width, int height) {
+        if (hevcPreview == null || width <= 0 || height <= 0) return;
+        float desired = 16f / 9f;
+        float actual = width / (float) height;
+        Matrix matrix = new Matrix();
+        if (actual > desired) {
+            matrix.setScale(desired / actual, 1f, width / 2f, height / 2f);
+        } else {
+            matrix.setScale(1f, actual / desired, width / 2f, height / 2f);
+        }
+        hevcPreview.setTransform(matrix);
     }
 
     private void toggleMode() {
