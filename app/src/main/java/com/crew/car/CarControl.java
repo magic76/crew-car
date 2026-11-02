@@ -364,7 +364,7 @@ public final class CarControl {
         final long epoch = motionEpoch.get();
         io.execute(() -> {
             if (!armed || motionEpoch.get() != epoch || !manual) return;
-            deadline = SystemClock.elapsedRealtime() + 1600;
+            deadline = SystemClock.elapsedRealtime() + 500;
             if (!command.equals(active)) {
                 active = command;
                 sendInternal(command); // do not duplicate TX on each 180ms UI renewal
