@@ -55,7 +55,7 @@ public final class MainActivity extends Activity {
     private GeminiLive gemini;
     private CrewVision crewVision;
     private VisionOverlay visionOverlay;
-    private Button visionButton, followButton;
+    private Button visionButton, followButton, lockButton;
     private volatile boolean visionEnabled;
     private long followLastLogAt;
     private Button quickTalkButton, interruptButton;
@@ -172,6 +172,7 @@ public final class MainActivity extends Activity {
                 log.i("SAFETY", "car is disarmed; syncing UI lock state");
                 uncheck();
             }
+            updateLockButton();
             maybeStartCamera();
             updateNetworkStatus();
             updateTxStatus();
@@ -364,6 +365,8 @@ public final class MainActivity extends Activity {
         brand.setTextColor(Color.rgb(22, 32, 46));
         brand.setTextSize(17);
         brand.setTypeface(null, Typeface.BOLD);
+        brand.setSingleLine(true);
+        brand.setEllipsize(android.text.TextUtils.TruncateAt.END);
         topRow.addView(brand, new LinearLayout.LayoutParams(0, dp(38), 1));
         quickTalkButton = button("AI 說話", v -> quickTalk());
         quickTalkButton.setBackgroundTintList(android.content.res.ColorStateList.valueOf(
@@ -383,7 +386,11 @@ public final class MainActivity extends Activity {
         followButton.setTextSize(12);
         topRow.addView(followButton, new LinearLayout.LayoutParams(dp(66), dp(38)));
         Button controlLayoutButton = button("操控", v -> openControlLayoutDialog());
-        topRow.addView(controlLayoutButton, new LinearLayout.LayoutParams(dp(66), dp(38)));
+        topRow.addView(controlLayoutButton, new LinearLayout.LayoutParams(dp(60), dp(38)));
+        lockButton = button("🔒 已上鎖", v -> toggleDriveLock());
+        lockButton.setTextSize(12);
+        lockButton.setContentDescription("車輛已上鎖；點擊解鎖並確認");
+        topRow.addView(lockButton, new LinearLayout.LayoutParams(dp(90), dp(38)));
         modeButton = button("設定", v -> toggleMode());
         topRow.addView(modeButton, new LinearLayout.LayoutParams(dp(76), dp(38)));
         banner.addView(topRow);
@@ -465,6 +472,14 @@ public final class MainActivity extends Activity {
         settingsNavigation.setOrientation(LinearLayout.VERTICAL);
         settingsNavigation.setPadding(dp(5), dp(8), dp(5), dp(5));
         settingsNavigation.setBackgroundColor(Color.rgb(228, 236, 244));
+        settingsSafetyLabel = new TextView(this);
+        settingsSafetyLabel.setText("🔒 設定已上鎖");
+        settingsSafetyLabel.setTextSize(12);
+        settingsSafetyLabel.setTextColor(Color.rgb(65, 83, 100));
+        settingsSafetyLabel.setGravity(Gravity.CENTER_VERTICAL);
+        settingsSafetyLabel.setPadding(dp(7), 0, 0, 0);
+        settingsNavigation.addView(settingsSafetyLabel,
+                new LinearLayout.LayoutParams(-1, dp(28)));
         settingsShell.addView(settingsNavigation,
                 new LinearLayout.LayoutParams(dp(184), -1));
         settingsShell.addView(settingsScroller,
@@ -513,13 +528,22 @@ public final class MainActivity extends Activity {
         cockpit.addView(drivePad, new FrameLayout.LayoutParams(-1, -1));
         // Settings are an overlay; the TextureView is not detached or restarted.
         cockpit.addView(settingsShell, new FrameLayout.LayoutParams(-1, -1));
-
-        LinearLayout driveConsole = new LinearLayout(this);
-        driveConsole.setOrientation(LinearLayout.HORIZONTAL);
-        driveConsole.setGravity(Gravity.CENTER_VERTICAL);
-        driveConsole.setPadding(dp(8), dp(2), dp(8), dp(2));
-        driveConsole.setBackgroundColor(Color.rgb(232, 239, 246));
-        screen.addView(driveConsole, new LinearLayout.LayoutParams(-1, dp(62)));
+        // STOP is the last/topmost cockpit child, ABOVE driving touch and settings.
+        // Right bottom is reserved by DualStickDriveView; this hitbox never
+        // doubles as a reverse-throttle action.
+        Button stopButton = button("■ 急停", v -> emergencyStopAndLock());
+        stopButton.setContentDescription("緊急停止並上鎖");
+        stopButton.setTextColor(Color.WHITE);
+        stopButton.setTextSize(15);
+        stopButton.setBackgroundTintList(android.content.res.ColorStateList.valueOf(
+                Color.rgb(185, 34, 49)));
+        stopButton.setElevation(dp(12));
+        FrameLayout.LayoutParams stopParams = new FrameLayout.LayoutParams(
+                dp(92), dp(56), Gravity.END | Gravity.BOTTOM);
+        stopParams.rightMargin = dp(8);
+        stopParams.bottomMargin = dp(8);
+        cockpit.addView(stopButton, stopParams);
+        cockpit.setMotionEventSplittingEnabled(true);
         // Capture the original form sections; preserve every existing input callback.
         int[] settingsCuts = new int[8];
         TextView heading = label(root, "車輛與連線", 17);
@@ -673,21 +697,15 @@ public final class MainActivity extends Activity {
                 }), button("立即停止", v -> emergencyStopAndLock()));
 
         settingsCuts[4] = root.getChildCount(); // advanced protocol fields
+        // Keep the pre-existing checked-state listener as the internal arming
+        // contract. It is deliberately not attached to the cockpit UI.
+        // The compact header lock button is its sole user-facing trigger.
         arm = new CheckBox(this);
-        arm.setText("解鎖駕駛");
-        arm.setTextSize(13);
-        driveConsole.addView(arm, new LinearLayout.LayoutParams(dp(126), -1));
-        settingsSafetyLabel = new TextView(this);
-        settingsSafetyLabel.setText("設定模式 · 車輛已上鎖");
-        settingsSafetyLabel.setTextSize(12);
-        settingsSafetyLabel.setTextColor(Color.rgb(75, 91, 104));
-        settingsSafetyLabel.setGravity(Gravity.CENTER_VERTICAL);
-        settingsSafetyLabel.setPadding(dp(6), 0, 0, 0);
-        settingsSafetyLabel.setVisibility(View.GONE);
-        driveConsole.addView(settingsSafetyLabel,
-                new LinearLayout.LayoutParams(dp(175), -1));
         arm.setOnCheckedChangeListener((view, checked) -> {
-            if (changingConfig) return;
+            if (changingConfig) {
+                updateLockButton();
+                return;
+            }
             if (checked) {
                 if (!applyConfig()) { uncheck(); return; }
                 String issue = control.arm();
@@ -705,19 +723,14 @@ public final class MainActivity extends Activity {
                 releaseManualInputs();
                 control.disarm();
             }
+            updateLockButton();
         });
         label(root, "按住前進／倒車會由本機持續送封包，直到放開、急停或失去控制更新。AI 油門保持可一次最多 30 秒，方向可以獨立微調；車端沒有 ACK。", 12);
 
-        Button stopButton = button("■ 急停 STOP · 上鎖", v -> emergencyStopAndLock());
-        stopButton.setTextColor(Color.WHITE);
-        stopButton.setBackgroundTintList(android.content.res.ColorStateList.valueOf(Color.rgb(177, 36, 42)));
-        stopButton.setTextSize(16);
-        driveConsole.addView(stopButton, new LinearLayout.LayoutParams(0, dp(54), 1.4f));
-        tuningActive = label(driveConsole, "50ms｜轉向100%｜油門100%", 11);
+        // The technical tuning indicator belongs in Control settings, not
+        // a permanent bar below the FPV feed.
+        tuningActive = label(root, "50ms｜轉向100%｜油門100%", 12);
         tuningActive.setSingleLine(false);
-        tuningActive.setGravity(Gravity.CENTER_VERTICAL);
-        tuningActive.setPadding(dp(6), 0, 0, 0);
-        tuningActive.setLayoutParams(new LinearLayout.LayoutParams(dp(190), -1));
 
         settingsCuts[5] = root.getChildCount(); // control hold explanation
         label(root, "3. Gemini 3.8 Live（手機麥克風 + 車頭畫面）", 17).setTypeface(null, Typeface.BOLD);
@@ -975,14 +988,52 @@ public final class MainActivity extends Activity {
         updateMode();
     }
 
+    /** Compact arming affordance; never automatically unlock on screen changes. */
+    private void updateLockButton() {
+        if (lockButton == null || control == null) return;
+        boolean armedNow = control.armed() && arm != null && arm.isChecked();
+        lockButton.setText(armedNow ? "🔓 已解鎖" : "🔒 已上鎖");
+        lockButton.setTextColor(armedNow ? Color.rgb(15, 95, 68) : Color.rgb(52, 65, 81));
+        lockButton.setBackgroundTintList(android.content.res.ColorStateList.valueOf(
+                armedNow ? Color.rgb(204, 245, 223) : Color.rgb(225, 233, 241)));
+        lockButton.setContentDescription(!drivingMode ? "設定模式，車輛已上鎖" :
+                armedNow ? "車輛已解鎖，點擊立即停止並上鎖" :
+                        "車輛已上鎖，點擊確認解鎖");
+        lockButton.setEnabled(drivingMode);
+    }
+
+    private void toggleDriveLock() {
+        if (!drivingMode || !foreground || arm == null || control == null) return;
+        if (control.armed()) {
+            emergencyStopAndLock();
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("解鎖駕駛")
+                .setMessage("請先確認周圍安全、車輛已連線且急停可使用。" +
+                        "解鎖後仍需按住前進或倒車才會移動。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("確認解鎖", (dialog, which) -> {
+                    if (!foreground || !drivingMode || arm == null || control.armed())
+                        return;
+                    arm.setChecked(true); // reuse the original safety validation path
+                    updateLockButton();
+                    if (!control.armed())
+                        android.widget.Toast.makeText(this,
+                                "無法解鎖：請確認車型、Wi-Fi 與控制設定",
+                                android.widget.Toast.LENGTH_LONG).show();
+                })
+                .show();
+    }
+
     private void updateMode() {
         if (settingsShell == null || drivePad == null || modeButton == null) return;
         drivePad.setVisibility(drivingMode ? View.VISIBLE : View.GONE);
         settingsShell.setVisibility(drivingMode ? View.GONE : View.VISIBLE);
-        if (arm != null) arm.setVisibility(drivingMode ? View.VISIBLE : View.GONE);
         if (settingsSafetyLabel != null)
             settingsSafetyLabel.setVisibility(drivingMode ? View.GONE : View.VISIBLE);
         modeButton.setText(drivingMode ? "設定" : "返回駕駛");
+        updateLockButton();
     }
 
     private DriverLayoutConfig loadDriverLayout() {
@@ -1100,6 +1151,7 @@ public final class MainActivity extends Activity {
         changingConfig = false;
         releaseManualInputs();
         control.disarm();
+        updateLockButton();
     }
 
     private boolean applyConfig() {
@@ -1263,6 +1315,7 @@ public final class MainActivity extends Activity {
             changingConfig = false;
         }
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        updateLockButton();
         log.i("SAFETY", "USER E-STOP: disarmed, manual re-arm required");
     }
 
