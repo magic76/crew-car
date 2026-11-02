@@ -29,11 +29,12 @@ public final class GeminiCarTools {
                 .put("required", new JSONArray().put("direction").put("duration_ms"));
 
         JSONObject hold = action("set_drive_state",
-                "Set a bounded motor state for up to 5 seconds. This is the accelerator being HELD, NOT one button tap. " +
-                "To continue straight while changing steering, send throttle=keep and steering=left/right/center. " +
-                "To keep steering while adjusting gas, send steering=keep. A previous AI state must still be active for keep. " +
-                "No endless cruise: renew explicitly before expiration, otherwise the watchdog stops the car. " +
-                "Only one human-authorized bounded motion at a time; never navigate unattended.");
+                "START/UPDATE sustained local throttle and steering, not a short tap. One call holds the accelerator " +
+                "for 15 seconds by default, up to 30 seconds if requested; the phone sends motor packets automatically. " +
+                "When changing steering, use throttle=keep so forward/reverse CONTINUES without braking. " +
+                "Use steer_car for short turns while keeping throttle unchanged. " +
+                "A previous active state is required for keep. No indefinite autopilot: the lease expires and STOPs; " +
+                "use only when the human explicitly requests motion and supervises the car.");
         hold.getJSONObject("parameters")
                 .put("properties", new JSONObject()
                         .put("steering", new JSONObject().put("type", "STRING")
@@ -41,12 +42,23 @@ public final class GeminiCarTools {
                         .put("throttle", new JSONObject().put("type", "STRING")
                                 .put("enum", new JSONArray().put("forward").put("reverse").put("neutral").put("keep")))
                         .put("lease_ms", new JSONObject().put("type", "INTEGER")
-                                .put("description", "Duration from 500 to 5000 ms; ends automatically with STOP unless renewed")));
+                                .put("description", "Optional duration from 500 to 30000 ms; default 15000. App keeps sending motor frames until expiry; never infinite.")));
         hold.getJSONObject("parameters").put("required",
-                new JSONArray().put("steering").put("throttle").put("lease_ms"));
+                new JSONArray().put("steering").put("throttle"));
+
+        JSONObject steering = action("steer_car",
+                "During an ACTIVE sustained AI throttle hold, briefly steer left/right or center " +
+                "without releasing gas or restarting the main cruise timer. " +
+                "Steering auto-centers after hold_ms (default 550ms); throttle remains held.");
+        steering.getJSONObject("parameters").put("properties", new JSONObject()
+                .put("direction", new JSONObject().put("type", "STRING")
+                        .put("enum", new JSONArray().put("left").put("right").put("center")))
+                .put("hold_ms", new JSONObject().put("type", "INTEGER")
+                        .put("description", "Optional 100–2000ms steering correction, default 550ms; gas unaffected.")));
+        steering.getJSONObject("parameters").put("required", new JSONArray().put("direction"));
 
         return new JSONArray()
-                .put(drive).put(hold)
+                .put(drive).put(hold).put(steering)
                 .put(action("stop_car",
                         "Send immediate neutral/STOP command. Allowed even when locked. Does not guarantee the car received it if Wi-Fi is offline."))
                 .put(action("lock_car",
