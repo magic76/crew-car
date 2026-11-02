@@ -54,6 +54,7 @@ public final class CrewVision {
     }
 
     public boolean enabled() { return enabled; }
+    public boolean ready() { return enabled && detector != null; }
     public boolean busy() { return busy.get(); }
 
     public synchronized void setEnabled(boolean active) {
