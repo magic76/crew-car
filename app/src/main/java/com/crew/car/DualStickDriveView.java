@@ -155,10 +155,9 @@ public final class DualStickDriveView extends View {
                 int id = event.getPointerId(index);
                 float x = event.getX(index), y = event.getY(index);
                 input.move(id, x, y, getWidth(), getHeight());
-                if (id == throttlePointer && throttleButtonAt(x, y) != buttonThrottle) {
-                    throttlePointer = -1;
-                    buttonThrottle = 0;
-                }
+                // A physical throttle hold follows its original pointer until UP/CANCEL.
+                // Small thumb drift must NOT release the accelerator or reverse button.
+                // Sliding across to the other button also cannot silently reverse.
             }
         } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_POINTER_UP) {
             int id = event.getPointerId(event.getActionIndex());
