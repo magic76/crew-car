@@ -198,6 +198,8 @@ public final class MainActivity extends Activity {
                 visionEnabled = false;
                 if (visionOverlay != null) visionOverlay.setEnabled(false);
                 updateVisionButton();
+                android.widget.Toast.makeText(MainActivity.this, message,
+                        android.widget.Toast.LENGTH_LONG).show();
                 log.e("VISION", message);
             }
         });
@@ -1136,7 +1138,13 @@ public final class MainActivity extends Activity {
         cameraNetwork = null;
         if (camera != null) camera.stop();
         if (wltoysVideo != null) wltoysVideo.stop();
-        if (visionOverlay != null) visionOverlay.clear();
+        // A restarted camera must not inherit detections from the old feed/session.
+        if (visionEnabled) {
+            crewVision.setEnabled(false);
+            visionEnabled = false;
+            updateVisionButton();
+        }
+        if (visionOverlay != null) visionOverlay.setEnabled(false);
         lastCameraFrame = 0;
         lastFrameWidth = 0;
         lastFrameHeight = 0;
