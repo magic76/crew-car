@@ -60,6 +60,7 @@ public final class GeminiLive {
     private volatile boolean micRunning;
     private volatile boolean assistantSpeaking;
     private volatile boolean assistantTurnFinished;
+    private volatile boolean ignoreAudioUntilTurnBoundary;
     private volatile long assistantSpeechTailMs;
     private volatile long speechGeneration;
     /** Time of the last JPEG accepted into the Live WebSocket send queue. */
@@ -87,6 +88,8 @@ public final class GeminiLive {
         speaker.clear();
         assistantTurnFinished = true;
         assistantSpeechTailMs = 0;
+        ++speechGeneration;
+        ignoreAudioUntilTurnBoundary = true;
         setAssistantSpeaking(false);
         // Client content ends the ongoing server generation. The next user
         // microphone audio remains enabled; do not send a fake user recording.
@@ -133,6 +136,7 @@ public final class GeminiLive {
         this.ready = false;
         this.assistantSpeaking = false;
         this.assistantTurnFinished = false;
+        this.ignoreAudioUntilTurnBoundary = false;
         this.assistantSpeechTailMs = 0;
         ++speechGeneration;
         this.lastFrameSent = 0L;
@@ -282,6 +286,7 @@ public final class GeminiLive {
             JSONObject content = m.optJSONObject("serverContent");
             if (content != null) {
                 if (content.optBoolean("interrupted")) {
+                    ignoreAudioUntilTurnBoundary = false;
                     speaker.clear();
                     assistantTurnFinished = true;
                     assistantSpeechTailMs = 0;
@@ -295,6 +300,7 @@ public final class GeminiLive {
                         if (p == null) continue;
                         JSONObject audio = p.optJSONObject("inlineData");
                         if (audio != null && audio.optString("mimeType").startsWith("audio/")) {
+                            if (ignoreAudioUntilTurnBoundary) continue;
                             byte[] chunk = Base64.decode(audio.optString("data"), Base64.DEFAULT);
                             speaker.offer(chunk);
                             assistantTurnFinished = false;
@@ -309,6 +315,7 @@ public final class GeminiLive {
                     }
                 }
                 if (content.optBoolean("turnComplete")) {
+                    ignoreAudioUntilTurnBoundary = false;
                     assistantTurnFinished = true;
                     long generation = ++speechGeneration;
                     main.post(() -> resumeMicAfterPlayback(generation));
@@ -634,6 +641,7 @@ public final class GeminiLive {
         socket = null;
         speaker.close();
         ++speechGeneration;
+        ignoreAudioUntilTurnBoundary = false;
         setAssistantSpeaking(false);
         if (client != null) {
             client.dispatcher().executorService().shutdown();
