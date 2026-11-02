@@ -141,11 +141,21 @@ public final class DualStickDriveView extends View {
         paint.setFakeBoldText(false);
     }
 
+    /** Keep the bottom-right corner clear for the independent E-STOP hit target. */
+    private float throttleTop() {
+        return Math.max(dp(24), dp(27 + layout.offsetDp));
+    }
+
+    private float throttleBottom(float height) {
+        return DriveStopGeometry.throttleBottomPx(
+                height, getResources().getDisplayMetrics().density, layout.offsetDp);
+    }
+
     private void drawThrottleButtons(Canvas c, float cx, float side, float height) {
         float left = cx - side * .5f + dp(4);
         float right = cx + side * .5f - dp(4);
-        float top = Math.max(dp(24), dp(27 + layout.offsetDp));
-        float bottom = Math.min(height - dp(14), height - dp(18) + dp(layout.offsetDp));
+        float top = throttleTop();
+        float bottom = throttleBottom(height);
         float split = (top + bottom) * .5f;
         float upperBottom = split - dp(layout.gapDp) * .5f;
         float lowerTop = split + dp(layout.gapDp) * .5f;
@@ -159,7 +169,8 @@ public final class DualStickDriveView extends View {
         paint.setFakeBoldText(false);
         paint.setTextSize(dp(11));
         paint.setColor(Color.rgb(220, 235, 244));
-        c.drawText("按住行駛｜放開停止", cx, height - dp(6), paint);
+        // The red emergency stop occupies the otherwise empty bottom-right area.
+        // Do not render text underneath its independent hit target.
     }
 
     private void drawThrottleButton(Canvas c, float left, float top, float right, float bottom,
@@ -181,8 +192,8 @@ public final class DualStickDriveView extends View {
         float side = width * layout.sideFraction();
         float left = width - side + dp(4);
         float right = width - dp(4);
-        float top = Math.max(dp(24), dp(27 + layout.offsetDp));
-        float bottom = Math.min(height - dp(14), height - dp(18) + dp(layout.offsetDp));
+        float top = throttleTop();
+        float bottom = throttleBottom(height);
         float split = (top + bottom) * .5f;
         if (x < left || x > right) return 0;
         if (y >= top && y <= split - dp(layout.gapDp) * .5f) return 1;
