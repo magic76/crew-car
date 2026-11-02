@@ -68,6 +68,7 @@ public final class CarControl {
                     try { safe = aiSafetyGate.getAsBoolean(); } catch (Exception e) { safe = false; }
                     if (!safe) {
                         aiHoldActive = false;
+                        armed = false; // fail closed: require human to re-arm after lost safety
                         stopInternal("AI camera/Live/network gate stale");
                         return;
                     }
@@ -259,8 +260,16 @@ public final class CarControl {
         io.execute(() -> {
             if (!armed || manual || epoch != motionEpoch.get()) return;
             try {
-                if (!aiSafetyGate.getAsBoolean()) { stopInternal("AI gate rejected"); return; }
-            } catch (Exception e) { stopInternal("AI gate failure"); return; }
+                if (!aiSafetyGate.getAsBoolean()) {
+                    armed = false;
+                    stopInternal("AI gate rejected");
+                    return;
+                }
+            } catch (Exception e) {
+                armed = false;
+                stopInternal("AI gate failure");
+                return;
+            }
             aiSteer = steer;
             aiThrottle = gas;
             aiHoldActive = true;
