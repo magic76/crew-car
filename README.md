@@ -143,3 +143,13 @@ The driving cockpit now dedicates **60%** of available width to the central FPV 
 - **Compatibility:** `CarControl.java`, the 180ms manual keepalive, the 500ms watchdog, OEM motor packets, Wi-Fi/Gemini and the separate AI tools are **unchanged**. Full advanced Settings redesign is intentionally deferred until the driver UI is accepted.
 
 See [v0.1.18 driving UX QA](docs/DRIVER_UX_V018_QA.md) for detailed dual-thumb, stop, geometry and rotation acceptance checks.
+
+## v0.1.19 — landscape settings categories + Android system-bar clearance
+
+The full diagnostics/settings screen is now a landscape **two-column layout**, with a fixed left rail (車輛與連線 / 操控設定 / AI 與攝影機 / 進階與診斷), and a single independently scrolling content panel on the right. All former fields are moved directly into category groups, preserving their existing values and listeners. A persistent red STOP and a locked safety status remain at the bottom. Opening Settings still stops/disarms and never re-arms automatically; the settings view overlays the existing attached camera surface.
+
+The driving header is now inset from system status/nav bars, edge cutouts and the device's camera hole via Android `WindowInsets`, so both landscape rotations respect real safe areas (including Android 15 edge-to-edge). No hardcoded status-bar spacer is used.
+
+**Unchanged:** car motor and packet code, 180ms manual loop, 500ms deadman, steering/throttle controls, AI tools, camera stream, vehicle profiles and BYOK secret storage.
+
+[Landscape settings / Samsung safe-area QA](docs/LANDSCAPE_SETTINGS_INSETS_QA.md).
