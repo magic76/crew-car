@@ -61,6 +61,11 @@ public final class DualStickDriveView extends View {
         return layout.buttonSteering ? steeringButtons.steering() : input.steering();
     }
 
+    private float steeringButtonY(float y) {
+        // Header/footer are labels, not active steering buttons.
+        return y < dp(28) || y > getHeight() - dp(22) ? -1f : y;
+    }
+
     private float dp(float value) {
         return value * getResources().getDisplayMetrics().density;
     }
@@ -213,7 +218,7 @@ public final class DualStickDriveView extends View {
                 }
             } else if (x < getWidth() * layout.sideFraction()) {
                 if (layout.buttonSteering)
-                    steeringButtons.down(id, x, y, getWidth() * layout.sideFraction(), getHeight());
+                    steeringButtons.down(id, x, steeringButtonY(y), getWidth() * layout.sideFraction(), getHeight());
                 else input.down(id, x, y, getWidth(), getHeight());
             }
             if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
@@ -222,7 +227,7 @@ public final class DualStickDriveView extends View {
                 int id = event.getPointerId(index);
                 float x = event.getX(index), y = event.getY(index);
                 if (layout.buttonSteering)
-                    steeringButtons.move(id, x, y, getWidth() * layout.sideFraction(), getHeight());
+                    steeringButtons.move(id, x, steeringButtonY(y), getWidth() * layout.sideFraction(), getHeight());
                 else input.move(id, x, y, getWidth(), getHeight());
                 if (id == throttlePointer && throttleButtonAt(x, y) != buttonThrottle) {
                     throttlePointer = -1;
