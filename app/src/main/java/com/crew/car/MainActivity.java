@@ -471,6 +471,10 @@ public final class MainActivity extends Activity {
             @Override public void onNothingSelected(android.widget.AdapterView<?> parent) {}
         });
         settingsCuts[2] = root.getChildCount(); // vehicle profile
+        label(root, "觸控按鍵與操控方式", 17).setTypeface(null, Typeface.BOLD);
+        label(root, "調整左右按鍵、搖桿、油門位置和震動；不修改馬達輸出。", 12);
+        root.addView(button("調整駕駛按鍵布局", v -> openControlLayoutDialog()),
+                new LinearLayout.LayoutParams(-1, dp(48)));
         label(root, "操控調校｜預設與實際週期", 17)
                 .setTypeface(null, Typeface.BOLD);
         label(root, "週期越短，重複封包越密；原廠基準為 50ms。30／20／10ms 是頻率實驗值，測試時請架空車輪。", 12);
@@ -691,13 +695,7 @@ public final class MainActivity extends Activity {
             root.removeViewAt(0);
             int chunk = 0;
             while (chunk < cuts.length - 1 && i >= cuts[chunk]) chunk++;
-            int section;
-            switch (chunk) {
-                case 0: case 2: section = 0; break; // vehicle and Wi-Fi
-                case 3: case 5: section = 1; break; // touch and motor tuning
-                case 1: case 6: section = 2; break; // FPV and Gemini
-                default: section = 3; break; // protocol / diagnostics
-            }
+            int section = SettingsSectionRouter.sectionForChunk(chunk);
             settingsSections[section].addView(element);
         }
         for (LinearLayout panel : settingsSections) root.addView(panel);
