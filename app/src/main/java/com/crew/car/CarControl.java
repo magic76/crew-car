@@ -475,6 +475,10 @@ public final class CarControl {
         if (steer < -1 || steer > 1 || throttle < -1 || throttle > 1)
             return "blocked: axis must be -1, 0, or 1";
         if (!armed) return "blocked: control locked";
+        if (steer != 0 || throttle != 0) {
+            if (!MotorAuthorityPolicy.canUpdate(owner(), MotorAuthorityPolicy.Owner.MANUAL))
+                return "blocked: manual motor authority unavailable";
+        }
         if (steer == 0 && throttle == 0) {
             emergencyStop();
             return "stopped";
@@ -489,7 +493,9 @@ public final class CarControl {
         final String command = "axes:" + steer + ":" + throttle;
         final long epoch = motionEpoch.get();
         io.execute(() -> {
-            if (!armed || motionEpoch.get() != epoch || !manual) return;
+            if (!armed || motionEpoch.get() != epoch || !manual ||
+                    !MotorAuthorityPolicy.canUpdate(owner(), MotorAuthorityPolicy.Owner.MANUAL))
+                return;
             deadline = SystemClock.elapsedRealtime() + 500;
             if (!command.equals(active)) {
                 active = command;
@@ -503,7 +509,8 @@ public final class CarControl {
 
     private void emergencyStop(String reason) {
         lastStopReason = reason;
-        lastStopRequestedAt = SystemClock.elapsedRealtime();
+        final long stopRequestedAt = SystemClock.elapsedRealtime();
+        lastStopRequestedAt = stopRequestedAt;
         lastStopLocalDelayMs = -1;
         visionFollowActive = false;
         visionFollowLimitAt = 0;
@@ -515,7 +522,7 @@ public final class CarControl {
         Config target = config;
         deadline = 0;
         active = "stop";
-        io.execute(() -> stopInternal(reason, target));
+        io.execute(() -> stopInternal(reason, target, stopRequestedAt));
     }
 
     private void stopInternal(String reason) {
@@ -523,11 +530,13 @@ public final class CarControl {
     }
 
     private void stopInternal(String reason, Config target) {
+        stopInternal(reason, target, SystemClock.elapsedRealtime());
+    }
+
+    private void stopInternal(String reason, Config target, long requestedAt) {
         long now = SystemClock.elapsedRealtime();
-        if (lastStopRequestedAt <= 0 || !"E-STOP".equals(reason)) {
-            lastStopRequestedAt = now;
-            lastStopLocalDelayMs = -1;
-        }
+        lastStopRequestedAt = requestedAt;
+        lastStopLocalDelayMs = -1;
         lastStopReason = reason;
         long stopEpoch = motionEpoch.incrementAndGet(); // invalidate pending motor commands
         visionFollowActive = false;
