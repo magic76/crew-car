@@ -59,3 +59,11 @@ adb logcat -v time -s CrewCar:D AndroidRuntime:E
 `[AI] drive lease accepted`, `[SAFETY] STOP reason=AI lease expired`, `[SAFETY] STOP reason=AI camera/Live/network gate stale`, `[AUDIO] assistant speaking`, `[AUDIO] assistant finished`, and `[AUDIO] user tapped interrupt`.
 
 This version's code changes are source-reviewed, but **no physical vehicle, Android SDK build or real Live audio verification was performed in ChatGPT's environment**.
+
+## v0.1.16: hold behavior regression and continuous AI cruise
+
+**Manual:** With wheels raised, hold ▲ forward for >=8 seconds. The on-screen status must say the throttle is held, with periodic `TX axes:0:1` status or increasing local TX counter. Small drag outside the button must NOT release it. Release the original thumb -> neutral STOP. Repeat ▼ reverse for >=8 seconds. Holding steering with the second thumb must not interrupt gas; lifting steering must re-center while gas continues. ACTION_CANCEL, leaving app, unlocking changes, emergency STOP and Wi-Fi loss must cancel movement. If UI cannot provide a deadman update for 1.6 seconds, movement expires fail-closed.
+
+**AI:** Start manual-armed Live with fresh video, say "持續向前開十五秒" -> `set_drive_state(center,forward,15000)`. At ~5s it must still have TX traffic; do not stop at the old 5s limit. Say "稍微左轉" while moving -> `steer_car(left,550)`, followed by automatic steering neutral `axes:0:1`, **without neutral throttle during turn**. A corresponding right-turn call behaves the same. A legacy `drive_car(left,...)` while cruise is active should be blocked with a helpful message, *not brake*. After the original 15s cruise time (unless explicitly renewed by a new `set_drive_state`), neutral STOP must fire automatically. Test no camera frame, no Live queue, Wi-Fi disconnect, phone background, manual takeover, lock, and the red STOP for immediate termination. Verify no unlimited movement beyond 30s from a single tool call.
+
+The app performs camera freshness and local UDP sending, but cannot know speed, distances or obstacles, and there is no motor ACK. All continuous-driving tests require direct physical supervision and immediate access to the car power switch.
