@@ -6,6 +6,10 @@ import android.net.LinkProperties;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.RouteInfo;
+import android.net.NetworkRequest;
+import android.os.Handler;
+import android.os.Looper;
+import java.util.function.Consumer;
 
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
@@ -18,6 +22,12 @@ import java.net.URLConnection;
 public final class CarNetwork {
     private final ConnectivityManager cm;
     private final CarLog log;
+    private final Handler main = new Handler(Looper.getMainLooper());
+    private ConnectivityManager.NetworkCallback cellularRequest;
+    private Consumer<Network> pendingCellularReady;
+    private Runnable pendingCellularFailure;
+    private Runnable cellularTimeout;
+    private int cellularGeneration;
     private DatagramSocket controlSocket;
     private Network controlNetwork;
     private String controlHost;
@@ -54,6 +64,8 @@ public final class CarNetwork {
             if (cap.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) return n;
             fallback = n;
         }
+        // An offline toy Wi-Fi must never be used for a cloud websocket.
+        if (car != null && !isValidatedInternet(car)) return null;
         if (fallback != null) return fallback;
         return isValidatedInternet(car) ? car : null;
     }
@@ -65,6 +77,96 @@ public final class CarNetwork {
                 cap.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) &&
                 cap.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
     }
+
+    /**
+     * Request cellular data alongside the toy's offline Wi-Fi.
+     * The caller must retain the request until Live disconnects.
+     * requestNetwork requires CHANGE_NETWORK_STATE and cannot request VALIDATED
+     * as a constraint. Wait until onCapabilitiesChanged confirms validation.
+     */
+    public void requestCellularForLive(Consumer<Network> onReady, Runnable onFailure) {
+        releaseCellularForLive();
+        final int generation = cellularGeneration;
+        pendingCellularReady = onReady;
+        pendingCellularFailure = onFailure;
+        ConnectivityManager.NetworkCallback callback = new ConnectivityManager.NetworkCallback() {
+            @Override public void onAvailable(Network network) {
+                checkCellularReady(network, cm.getNetworkCapabilities(network), generation);
+            }
+
+            @Override public void onCapabilitiesChanged(Network network, NetworkCapabilities caps) {
+                checkCellularReady(network, caps, generation);
+            }
+
+            @Override public void onLost(Network network) {
+                log.i("NET", "requested cellular route lost; car Wi-Fi unaffected");
+            }
+
+            @Override public void onUnavailable() {
+                failCellular(generation, "cellular request unavailable");
+            }
+        };
+        cellularRequest = callback;
+        NetworkRequest request = new NetworkRequest.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build();
+        try {
+            cm.requestNetwork(request, callback, main);
+            log.i("NET", "requested CELLULAR + INTERNET alongside car Wi-Fi");
+        } catch (RuntimeException e) {
+            log.e("NET", "cellular request denied class=" + e.getClass().getSimpleName());
+            failCellular(generation, "cellular request rejected");
+            return;
+        }
+        if (cellularRequest == callback && pendingCellularReady != null) {
+            cellularTimeout = () -> failCellular(generation, "cellular not validated within 18s");
+            main.postDelayed(cellularTimeout, 18_000);
+        }
+    }
+
+    private void checkCellularReady(Network network, NetworkCapabilities caps, int generation) {
+        if (generation != cellularGeneration || pendingCellularReady == null || caps == null)
+            return;
+        if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ||
+                !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) ||
+                !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) return;
+        Consumer<Network> ready = pendingCellularReady;
+        pendingCellularReady = null;
+        pendingCellularFailure = null;
+        if (cellularTimeout != null) main.removeCallbacks(cellularTimeout);
+        cellularTimeout = null;
+        log.i("NET", "validated CELLULAR route ready for Gemini; car Wi-Fi remains separate");
+        ready.accept(network);
+    }
+
+    private void failCellular(int generation, String explanation) {
+        if (generation != cellularGeneration || pendingCellularReady == null) return;
+        Runnable failed = pendingCellularFailure;
+        log.e("NET", explanation);
+        releaseCellularForLive();
+        if (failed != null) failed.run();
+    }
+
+    /** Unregister when Live disconnects, app exits, or a pending request expires. */
+    public void releaseCellularForLive() {
+        cellularGeneration++;
+        pendingCellularReady = null;
+        pendingCellularFailure = null;
+        if (cellularTimeout != null) main.removeCallbacks(cellularTimeout);
+        cellularTimeout = null;
+        ConnectivityManager.NetworkCallback callback = cellularRequest;
+        cellularRequest = null;
+        if (callback != null) {
+            try {
+                cm.unregisterNetworkCallback(callback);
+            } catch (IllegalArgumentException ignored) {
+                // Android may already have released a timed-out request.
+            }
+        }
+    }
+
+    public boolean cellularRequestActive() { return cellularRequest != null; }
 
     public URLConnection carConnection(URL url) throws Exception {
         Network n = wifi();

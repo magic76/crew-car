@@ -99,3 +99,13 @@ Crew Car now launches in landscape orientation. The camera is centered with a st
 This changes **UI input ergonomics only**. It does not imply camera protocol compatibility, hardware motor acknowledgement, analog throttle, autonomous obstacle avoidance, or more accurate speed sensing.
 
 [Two-thumb cockpit test checklist](docs/LANDSCAPE_COCKPIT_QA.md).
+
+## v0.1.10 — simultaneous offline car Wi-Fi + cellular Gemini Live
+
+On Android, being connected to a toy car's Wi-Fi without Internet does not itself prevent using cellular for cloud AI. However, Android may not expose a usable cellular `Network` until the app explicitly requests it.
+
+Crew Car now requests a separate Android **cellular Internet Network**, waits until `NET_CAPABILITY_VALIDATED` is reported, and only then opens Gemini Live using that Network's SocketFactory and DNS. Car motor packets and FPV camera traffic remain bound to Wi-Fi; the entire app process is never rebound.
+
+Requires `CHANGE_NETWORK_STATE` (normal Android permission) and working mobile data. Gemini's network request is cancelled after a bounded timeout or when Live disconnects. The UI reports when it is preparing mobile data. No Termux server or root is required.
+
+[Samsung S25 / dual-network QA and ADB diagnosis](docs/DUAL_NETWORK_QA.md).

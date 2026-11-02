@@ -46,6 +46,7 @@ public final class MainActivity extends Activity {
     private CameraStream camera;
     private WltoysVideoStream wltoysVideo;
     private GeminiLive gemini;
+    private int liveConnectToken;
 
     private EditText host, port, cameraUrl, key, prompt;
     private Spinner transport, encoding, profile, cameraAdapter, tuningPreset;
@@ -452,6 +453,8 @@ public final class MainActivity extends Activity {
         liveStatus = label(root, "Gemini 尚未連線", 13);
         row(root, button("連線 Live", v -> startGemini()),
                 button("斷線 Live", v -> {
+                    liveConnectToken++;
+                    routes.releaseCellularForLive();
                     gemini.disconnect();
                     control.emergencyStop();
                     liveStatus.setText("Gemini 已手動斷線");
@@ -565,7 +568,9 @@ public final class MainActivity extends Activity {
         if (netStatus != null) {
             Network wifi = routes.wifi();
             netStatus.setText("小車 Wi-Fi：" + (wifi == null ? "未連線" : "有連線") +
-                    "  |  Gemini 網路：" + (routes.internet(wifi) == null ? "不可用" : "可用") +
+                    "  |  Gemini 網路：" +
+                    (routes.internet(wifi) != null ? "可用" :
+                            routes.cellularRequestActive() ? "準備行動數據中" : "不可用") +
                     "  |  車輛回執：未支援");
         }
     }
@@ -721,9 +726,49 @@ public final class MainActivity extends Activity {
     private void startGemini() {
         String apiKey = key.getText().toString().trim();
         key.setText(""); // avoid leaving the secret in the view hierarchy
-        gemini.connect(apiKey, routes.internet(routes.wifi()), new GeminiLive.Listener() {
+        if (apiKey.isEmpty()) {
+            liveStatus.setText("請先輸入 Gemini API Key");
+            if (driverLiveStatus != null) driverLiveStatus.setText("Gemini Live：未輸入 Key");
+            return;
+        }
+        final int token = ++liveConnectToken;
+        Network car = routes.wifi();
+        Network initial = routes.internet(car);
+        // Normal Internet Wi-Fi and already-active cellular (without car Wi-Fi)
+        // do not need a dedicated cellular request for a read-only Live session.
+        if (initial != null && (car == null || routes.isValidatedInternet(car))) {
+            // Validated ordinary Wi-Fi does not need to reserve the mobile radio.
+            if (car != null && routes.isValidatedInternet(car))
+                routes.releaseCellularForLive();
+            connectGeminiOnNetwork(apiKey, initial);
+            return;
+        }
+        liveStatus.setText("正在準備行動數據（小車 Wi-Fi 保持連線）…");
+        if (driverLiveStatus != null)
+            driverLiveStatus.setText("Gemini Live：準備 4G／5G…");
+        log.i("LIVE", "requesting a separate cellular network for offline car Wi-Fi");
+        routes.requestCellularForLive(network -> {
+            if (token != liveConnectToken || !foreground || isFinishing()) return;
+            log.i("LIVE", "validated cellular route selected for Gemini");
+            updateNetworkStatus();
+            connectGeminiOnNetwork(apiKey, network);
+        }, () -> {
+            if (token != liveConnectToken || isFinishing()) return;
+            liveStatus.setText("行動網路無法啟用：請確認行動數據／SIM／訊號，再重試");
+            if (driverLiveStatus != null)
+                driverLiveStatus.setText("Gemini Live：行動網路不可用");
+            log.e("LIVE", "cellular not available; car Wi-Fi preserved");
+            updateNetworkStatus();
+        });
+    }
+
+    private void connectGeminiOnNetwork(String apiKey, Network route) {
+        gemini.connect(apiKey, route, new GeminiLive.Listener() {
             @Override public void onStatus(String status) {
-                if (status.contains("失敗") || status.contains("中斷")) control.emergencyStop();
+                if (status.contains("失敗") || status.contains("中斷")) {
+                    control.emergencyStop();
+                    main.post(routes::releaseCellularForLive);
+                }
                 runOnUiThread(() -> {
                     liveStatus.setText(status);
                     if (driverLiveStatus != null)
@@ -793,6 +838,7 @@ public final class MainActivity extends Activity {
                         "usable_gemini_internet_available", routes.internet(car) != null,
                         "internet_separate_from_wifi", routes.internet(car) != null &&
                                 !routes.internet(car).equals(car),
+                        "cellular_request_active", routes.cellularRequestActive(),
                         "wifi_confirmed_as_car", false,
                         "gemini_live_connected", gemini.ready(),
                         "note", "Wi-Fi presence does not prove the connected SSID belongs to the car; no claim about packet delivery");
@@ -858,6 +904,10 @@ public final class MainActivity extends Activity {
         if (control != null) control.disarm();
         if (arm != null) uncheck();
         if (gemini != null) gemini.stopMic();
+        if (!gemini.ready() && routes.cellularRequestActive()) {
+            liveConnectToken++;
+            routes.releaseCellularForLive();
+        }
         stopCameraReceiver();
     }
 
@@ -872,6 +922,8 @@ public final class MainActivity extends Activity {
     @Override protected void onDestroy() {
         main.removeCallbacks(cameraMonitor);
         stopCameraReceiver();
+        liveConnectToken++;
+        routes.releaseCellularForLive();
         if (gemini != null) gemini.disconnect();
         if (control != null) control.shutdown();
         super.onDestroy();
