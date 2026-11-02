@@ -18,7 +18,7 @@ public final class CarToolPolicy {
         return "drive_car".equals(name) || "stop_car".equals(name) ||
                 "lock_car".equals(name) || "get_car_status".equals(name) ||
                 "get_camera_status".equals(name) || "get_network_status".equals(name) ||
-                "set_drive_state".equals(name);
+                "set_drive_state".equals(name) || "steer_car".equals(name);
     }
 
     public static String validateHold(String steering, String throttle, int leaseMs) {
@@ -30,6 +30,15 @@ public final class CarToolPolicy {
             return "blocked: throttle must be forward/reverse/neutral/keep";
         if (leaseMs < MIN_HOLD_MS || leaseMs > MAX_HOLD_MS)
             return "blocked: lease_ms must be between 500 and 30000";
+        return null;
+    }
+
+    public static String validateSteer(String direction, int holdMs) {
+        if (!"left".equals(direction) && !"right".equals(direction) &&
+                !"center".equals(direction))
+            return "blocked: steering must be left/right/center";
+        if (holdMs < 100 || holdMs > 2000)
+            return "blocked: hold_ms must be between 100 and 2000";
         return null;
     }
 
