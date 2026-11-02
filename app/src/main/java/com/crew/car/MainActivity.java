@@ -1005,8 +1005,14 @@ public final class MainActivity extends Activity {
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(requestCode, permissions, results);
         if (requestCode == MIC_PERMISSION_REQUEST && results.length > 0 &&
-                results[0] == PackageManager.PERMISSION_GRANTED) gemini.startMic();
-        else if (requestCode == MIC_PERMISSION_REQUEST) log.e("MIC", "record audio permission denied");
+                results[0] == PackageManager.PERMISSION_GRANTED) {
+            gemini.startMic();
+            updateTalkButtons();
+        } else if (requestCode == MIC_PERMISSION_REQUEST) {
+            log.e("MIC", "record audio permission denied");
+            autoStartMicOnReady = false;
+            updateTalkButtons();
+        }
     }
 
     @Override protected void onPause() {
