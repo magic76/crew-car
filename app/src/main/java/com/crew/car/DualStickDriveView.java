@@ -167,7 +167,7 @@ public final class DualStickDriveView extends View {
 
     private int throttleButtonAt(float x, float y) {
         float width = getWidth(), height = getHeight();
-        float side = width * DualStickInput.SIDE_FRACTION;
+        float side = width * layout.sideFraction();
         float left = width - side + dp(4);
         float right = width - dp(4);
         float top = Math.max(dp(24), dp(27 + layout.offsetDp));
@@ -205,7 +205,7 @@ public final class DualStickDriveView extends View {
             int index = event.getActionIndex();
             int id = event.getPointerId(index);
             float x = event.getX(index), y = event.getY(index);
-            if (x >= getWidth() * (1f - DualStickInput.SIDE_FRACTION)) {
+            if (x >= getWidth() * (1f - layout.sideFraction())) {
                 int pressed = throttleButtonAt(x, y);
                 if (pressed != 0 && throttlePointer == -1) {
                     throttlePointer = id;
