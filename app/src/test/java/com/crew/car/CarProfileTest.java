@@ -15,6 +15,11 @@ public class CarProfileTest {
         assertEquals("", CarProfile.KL_FPV.defaultHost());
         assertEquals("", CarProfile.KL_FPV.defaultPort());
     }
+    @Test public void legacyCustomPreferencesRemainAvailable() {
+        assertTrue(CarProfile.CUSTOM.usesLegacySettings());
+        assertTrue(CarProfile.WL_TECH.usesLegacySettings());
+        assertFalse(CarProfile.KL_FPV.usesLegacySettings());
+    }
     @Test public void klFailsClosed() {
         assertFalse(KlFpvProtocol.isVerified());
         try {

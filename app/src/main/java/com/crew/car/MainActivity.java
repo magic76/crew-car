@@ -566,14 +566,14 @@ public final class MainActivity extends Activity {
         android.content.SharedPreferences p = getPreferences(MODE_PRIVATE);
         String key = activeProfile.settingKey(name);
         if (p.contains(key)) return p.getString(key, fallback);
-        return activeProfile == CarProfile.WL_TECH ? saved(name, fallback) : fallback;
+        return activeProfile.usesLegacySettings() ? saved(name, fallback) : fallback;
     }
 
     private int vehicleSavedInt(String name, int fallback) {
         android.content.SharedPreferences p = getPreferences(MODE_PRIVATE);
         String key = activeProfile.settingKey(name);
         if (p.contains(key)) return p.getInt(key, fallback);
-        return activeProfile == CarProfile.WL_TECH ? p.getInt(name, fallback) : fallback;
+        return activeProfile.usesLegacySettings() ? p.getInt(name, fallback) : fallback;
     }
 
     private void storeVehicleSettings(CarProfile model) {
@@ -737,8 +737,8 @@ public final class MainActivity extends Activity {
             storeVehicleSettings(activeProfile);
             android.content.SharedPreferences.Editor prefs = getPreferences(MODE_PRIVATE).edit();
             prefs.putInt("protocol_profile", activeProfile.spinnerIndex);
-            // Legacy keys belong to WL only; never overwrite them with KL configuration.
-            if (activeProfile == CarProfile.WL_TECH) {
+            // Retain old preference keys for both pre-existing modes, never KL.
+            if (activeProfile.usesLegacySettings()) {
                 prefs.putString("host", cfg.host).putString("port", String.valueOf(cfg.port))
                         .putString("camera_url", cameraUrl.getText().toString().trim())
                         .putInt("transport", transport.getSelectedItemPosition())

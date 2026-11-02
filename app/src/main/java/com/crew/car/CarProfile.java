@@ -23,6 +23,8 @@ public enum CarProfile {
             throw new IllegalArgumentException("invalid setting key");
         return "vehicle_" + id + "_" + field;
     }
+    /** Existing custom and WL profiles may use preferences from older builds. */
+    public boolean usesLegacySettings() { return this != KL_FPV; }
     public String defaultHost() { return this == WL_TECH ? "172.16.11.1" : ""; }
     public String defaultPort() { return this == WL_TECH ? "23458" : ""; }
 }
