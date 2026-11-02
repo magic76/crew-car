@@ -210,6 +210,7 @@ public final class CarControl {
             if ("stop".equals(direction)) { emergencyStop(); return "stopped"; }
             if (!armed) return "blocked: control locked";
             if (fromAi && manual) return "blocked: manual priority";
+            if (fromAi && aiHoldActive) emergencyStop(); // one AI control mode at a time
             int ms = Math.max(100, Math.min(fromAi ? 650 : 500, requestedMs));
             final String command = direction;
             final long epoch = motionEpoch.get();
@@ -321,6 +322,7 @@ public final class CarControl {
     }
 
     private void stopInternal(String reason, Config target) {
+        motionEpoch.incrementAndGet(); // invalidate every pending motor command on fail-safe STOP
         aiHoldActive = false;
         aiSteer = 0;
         aiThrottle = 0;
