@@ -91,3 +91,11 @@ Driver HUD improvements:
 - The tuning section now labels whether the slider values are *already active* or *pending apply*. Applying connection settings through the settings button also stops/disarms before changing configuration.
 
 **Hardware verification required:** check Android icon appearance on Samsung Launcher (including its round mask), app build and Wi-Fi camera reconnect, motor STOP, and screen-wake behavior. Do not interpret the on-device local TX stats as physical-car ACK.
+
+## v0.1.9 — landscape two-thumb cockpit
+
+Crew Car now launches in landscape orientation. The camera is centered with a steering-only left thumb region and a forward/reverse throttle-only right thumb region. Two fingers can operate simultaneously through one multi-touch tracker; lifting one finger centers **only its axis**. Central FPV stays unobstructed. Human arming and the large red STOP remain fixed across driving and settings, and settings opens with motors disarmed. The settings overlay does not remove the TextureView.
+
+This changes **UI input ergonomics only**. It does not imply camera protocol compatibility, hardware motor acknowledgement, analog throttle, autonomous obstacle avoidance, or more accurate speed sensing.
+
+[Two-thumb cockpit test checklist](docs/LANDSCAPE_COCKPIT_QA.md).
