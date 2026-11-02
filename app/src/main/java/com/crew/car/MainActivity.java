@@ -462,7 +462,9 @@ public final class MainActivity extends Activity {
         settingsScroller.setFillViewport(true);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(16), dp(15), dp(16), dp(32));
+        // The right-side settings scroller must be able to clear the
+        // persistent floating STOP overlay at its bottom edge.
+        root.setPadding(dp(16), dp(15), dp(16), dp(88));
         root.setBackgroundColor(Color.rgb(248, 250, 252));
         settingsScroller.addView(root);
         settingsShell = new LinearLayout(this);
@@ -538,6 +540,22 @@ public final class MainActivity extends Activity {
         stopButton.setBackgroundTintList(android.content.res.ColorStateList.valueOf(
                 Color.rgb(185, 34, 49)));
         stopButton.setElevation(dp(12));
+        // Do not wait for ACTION_UP: press-down is an immediate E-STOP even
+        // when the other thumb is still holding an active throttle pointer.
+        stopButton.setOnTouchListener((view, event) -> {
+            switch (event.getActionMasked()) {
+                case android.view.MotionEvent.ACTION_DOWN:
+                    emergencyStopAndLock();
+                    return true;
+                case android.view.MotionEvent.ACTION_UP:
+                    view.performClick(); // accessibility; idempotent STOP
+                    return true;
+                case android.view.MotionEvent.ACTION_CANCEL:
+                    return true;
+                default:
+                    return true;
+            }
+        });
         FrameLayout.LayoutParams stopParams = new FrameLayout.LayoutParams(
                 dp(92), dp(56), Gravity.END | Gravity.BOTTOM);
         stopParams.rightMargin = dp(8);
@@ -1691,6 +1709,7 @@ public final class MainActivity extends Activity {
         main.post(visionSampler);
         updateTalkButtons();
         updateVisionButton();
+        updateLockButton();
     }
 
     @Override protected void onDestroy() {
