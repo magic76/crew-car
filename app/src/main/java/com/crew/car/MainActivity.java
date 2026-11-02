@@ -53,6 +53,10 @@ public final class MainActivity extends Activity {
     private CameraStream camera;
     private WltoysVideoStream wltoysVideo;
     private GeminiLive gemini;
+    private CrewVision crewVision;
+    private VisionOverlay visionOverlay;
+    private Button visionButton;
+    private boolean visionEnabled;
     private Button quickTalkButton, interruptButton;
     private TextView aiDriveStatus;
     private boolean autoStartMicOnReady;
@@ -119,6 +123,30 @@ public final class MainActivity extends Activity {
             main.postDelayed(this, 180);
         }
     };
+    // Samples HEVC TextureView locally at up to 5 FPS independently of Gemini's 1 FPS.
+    // All inference executes on a dedicated worker; this sampler never touches motors.
+    private final Runnable visionSampler = new Runnable() {
+        @Override public void run() {
+            if (!foreground) return;
+            if (visionEnabled && drivingMode && cameraRunning &&
+                    currentCameraAdapter == 0 && hevcPreview != null &&
+                    hevcPreview.isAvailable() && hevcPreview.getWidth() > 0 &&
+                    hevcPreview.getHeight() > 0 && cameraAgeMs() >= 0 &&
+                    cameraAgeMs() <= 1500 && !crewVision.busy()) {
+                try {
+                    int width = 320;
+                    int height = Math.max(1, Math.round(width *
+                            hevcPreview.getHeight() / (float) hevcPreview.getWidth()));
+                    android.graphics.Bitmap captured = hevcPreview.getBitmap(width, height);
+                    if (captured != null) crewVision.submit(captured, true);
+                } catch (Exception e) {
+                    log.e("VISION", "capture unavailable " + e.getClass().getSimpleName());
+                }
+            }
+            if (visionOverlay != null) visionOverlay.expire(SystemClock.elapsedRealtime());
+            main.postDelayed(this, CrewVision.TARGET_INTERVAL_MS);
+        }
+    };
     private final Runnable cameraMonitor = new Runnable() {
         @Override public void run() {
             if (!foreground) return;
@@ -150,6 +178,32 @@ public final class MainActivity extends Activity {
         camera = new CameraStream(routes, log);
         wltoysVideo = new WltoysVideoStream(routes, log);
         gemini = new GeminiLive(log);
+        crewVision = new CrewVision(this, new CrewVision.Listener() {
+            @Override public void onPeople(java.util.List<PersonTracker.Box> people,
+                                            long frameAt, long inferMs) {
+                if (!visionEnabled || !foreground || !cameraRunning ||
+                        visionOverlay == null) return;
+                float aspect = lastFrameWidth > 0 && lastFrameHeight > 0 ?
+                        lastFrameWidth / (float) lastFrameHeight : 16f / 9f;
+                if (currentCameraAdapter == 0 && hevcPreview != null &&
+                        hevcPreview.getHeight() > 0) {
+                    aspect = hevcPreview.getWidth() / (float) hevcPreview.getHeight();
+                }
+                visionOverlay.update(people, frameAt, inferMs, aspect,
+                        currentCameraAdapter == 1);
+                if (people.size() > 0 && frameAt / 5000 != (frameAt - CrewVision.TARGET_INTERVAL_MS) / 5000)
+                    log.i("VISION", "people=" + people.size() +
+                            " inferMs=" + inferMs + " (display only)");
+            }
+            @Override public void onError(String message) {
+                visionEnabled = false;
+                if (visionOverlay != null) visionOverlay.setVisionEnabled(false);
+                updateVisionButton();
+                android.widget.Toast.makeText(MainActivity.this, message,
+                        android.widget.Toast.LENGTH_LONG).show();
+                log.e("VISION", message);
+            }
+        });
         driverLayout = loadDriverLayout();
         control.setAiSafetyGate(() -> foreground && gemini.ready() &&
                 routes.wifi() != null && cameraAgeMs() >= 0 &&
@@ -157,7 +211,7 @@ public final class MainActivity extends Activity {
                 gemini.liveVideoAgeMs() <= 2500);
         render();
         log.setListener(s -> runOnUiThread(() -> { if (logs != null) logs.setText(s); }));
-        log.i("APP", "Crew Car v0.1.16; manual held throttle + AI local cruise/steer, no vehicle ACK");
+        log.i("APP", "Crew Car v0.1.20; Crew Vision offline detection is display-only; no vehicle ACK");
         routes.diagnostics();
     }
 
@@ -278,6 +332,9 @@ public final class MainActivity extends Activity {
         Button retryCamera = button("重連鏡頭", v -> reconnectCamera());
         retryCamera.setTextSize(12);
         topRow.addView(retryCamera, new LinearLayout.LayoutParams(dp(84), dp(38)));
+        visionButton = button("辨識", v -> toggleVision());
+        visionButton.setTextSize(12);
+        topRow.addView(visionButton, new LinearLayout.LayoutParams(dp(64), dp(38)));
         Button controlLayoutButton = button("操控", v -> openControlLayoutDialog());
         topRow.addView(controlLayoutButton, new LinearLayout.LayoutParams(dp(66), dp(38)));
         modeButton = button("設定", v -> toggleMode());
@@ -321,6 +378,10 @@ public final class MainActivity extends Activity {
         cameraFrame.addView(preview, new FrameLayout.LayoutParams(-1, -1));
         hevcPreview = new TextureView(this);
         cameraFrame.addView(hevcPreview, new FrameLayout.LayoutParams(-1, -1));
+        visionOverlay = new VisionOverlay(this, selected ->
+                log.i("VISION", "user selected visible person box; motors unchanged"));
+        cameraFrame.addView(visionOverlay, new FrameLayout.LayoutParams(-1, -1));
+        visionOverlay.setVisionEnabled(false);
         hevcPreview.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
             @Override public void onSurfaceTextureAvailable(SurfaceTexture surface, int w, int h) {
                 fitCameraAspect(w, h);
@@ -1078,6 +1139,13 @@ public final class MainActivity extends Activity {
         cameraNetwork = null;
         if (camera != null) camera.stop();
         if (wltoysVideo != null) wltoysVideo.stop();
+        // A restarted camera must not inherit detections from the old feed/session.
+        if (visionEnabled) {
+            crewVision.setEnabled(false);
+            visionEnabled = false;
+            updateVisionButton();
+        }
+        if (visionOverlay != null) visionOverlay.setVisionEnabled(false);
         lastCameraFrame = 0;
         lastFrameWidth = 0;
         lastFrameHeight = 0;
@@ -1111,6 +1179,7 @@ public final class MainActivity extends Activity {
                 lastFrameHeight = frame.getHeight();
                 lastCameraFrame = SystemClock.elapsedRealtime();
                 gemini.frame(frame);
+                if (visionEnabled) crewVision.submit(frame, false);
                 runOnUiThread(() -> {
                     if (foreground && token == cameraSession && !isFinishing()) {
                         preview.setImageBitmap(frame);
@@ -1141,6 +1210,23 @@ public final class MainActivity extends Activity {
         }
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         log.i("SAFETY", "USER E-STOP: disarmed, manual re-arm required");
+    }
+
+    private void updateVisionButton() {
+        if (visionButton == null) return;
+        visionButton.setText(visionEnabled ? "辨識 ●" : "辨識");
+        visionButton.setContentDescription(visionEnabled ?
+                "關閉本地人物辨識，取消所有目標" : "開啟本地人物辨識（不會操作馬達）");
+    }
+
+    private void toggleVision() {
+        visionEnabled = !visionEnabled;
+        if (visionOverlay != null) visionOverlay.setVisionEnabled(visionEnabled);
+        crewVision.setEnabled(visionEnabled);
+        updateVisionButton();
+        log.i("VISION", visionEnabled ?
+                "offline person detection enabled (no automatic steering/throttle)" :
+                "person detection stopped, target cleared");
     }
 
     private void quickTalk() {
@@ -1322,7 +1408,13 @@ public final class MainActivity extends Activity {
                         "live_video_frame_queue_age_ms", liveAge,
                         "live_video_fresh", liveAge >= 0 && liveAge <= 2500,
                         "live_video_frames_queued", gemini.liveVideoFramesQueued(),
-                        "scene_recognition_available_here", false,
+                        "scene_recognition_available_here", visionEnabled,
+                        "local_person_detector_enabled", visionEnabled,
+                        "local_person_detector_ready", crewVision != null && crewVision.ready(),
+                        "people_detected", visionOverlay == null ? 0 : visionOverlay.personCount(),
+                        "selected_target", visionOverlay != null && visionOverlay.hasSelection(),
+                        "selected_target_lost", visionOverlay != null && visionOverlay.targetLost(),
+                        "vision_can_control_motors", false,
                         "distance_sensor_available", false,
                         "collision_sensor_available", false,
                         "note", "Camera only: JPEG queued to Live != model received/understood it. No measured depth or obstacle clearance.");
@@ -1415,6 +1507,11 @@ public final class MainActivity extends Activity {
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         main.removeCallbacks(cameraMonitor);
         main.removeCallbacks(aiDriveTicker);
+        main.removeCallbacks(visionSampler);
+        if (crewVision != null) crewVision.setEnabled(false);
+        visionEnabled = false;
+        if (visionOverlay != null) visionOverlay.setVisionEnabled(false);
+        updateVisionButton();
         autoStartMicOnReady = false;
         releaseManualInputs();
         if (control != null) control.disarm();
@@ -1435,17 +1532,22 @@ public final class MainActivity extends Activity {
         main.post(cameraMonitor);
         main.removeCallbacks(aiDriveTicker);
         main.post(aiDriveTicker);
+        main.removeCallbacks(visionSampler);
+        main.post(visionSampler);
         updateTalkButtons();
+        updateVisionButton();
     }
 
     @Override protected void onDestroy() {
         main.removeCallbacks(cameraMonitor);
         main.removeCallbacks(aiDriveTicker);
+        main.removeCallbacks(visionSampler);
         main.removeCallbacks(saveGeminiKeyLater);
         stopCameraReceiver();
         liveConnectToken++;
         routes.releaseCellularForLive();
         if (gemini != null) gemini.disconnect();
+        if (crewVision != null) crewVision.close();
         if (control != null) control.shutdown();
         super.onDestroy();
     }
