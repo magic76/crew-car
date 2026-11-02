@@ -79,3 +79,15 @@ See [docs/DRIVER_CONSOLE_QA.md](docs/DRIVER_CONSOLE_QA.md) for acceptance cases 
 Periodic command pacing is fixed-delay to avoid catch-up bursts on slow devices. Identical manual commands only extend the local watchdog deadline; the periodic sender is the single source of repeated WL packets. TX logging is throttled to avoid heavy UI snapshots. Live local send gap, max gap, send cost, total TX and failures are shown without pretending they measure car acknowledgement or true motion latency. The AI tool status can also inspect the selected tuning and local TX counters.
 
 [Read the control tuning A/B test guide](docs/CONTROL_TUNING.md).
+
+## v0.1.5: branded launcher icon and driver polish
+
+The user-approved Crew Car FPV buggy artwork is installed as an optimized WebP launcher icon under `app/src/main/res/mipmap-nodpi/ic_launcher.webp`. Both `android:icon` and `android:roundIcon` now reference it in `AndroidManifest.xml`. The selected artwork's full-resolution original remains available in the conversation; the app packages a compressed 160×160 launcher rendition to keep APK overhead small.
+
+Driver HUD improvements:
+- **重連鏡頭** is one tap away even with the settings panel hidden. It first stops/disarms motors, then requests a fresh camera session.
+- The driver header now shows Gemini Live connection state without entering advanced settings.
+- The phone screen stays awake **only while successfully armed**, and the flag clears on STOP/lock, backgrounding, AI lock, or detected Wi-Fi/TX disarm.
+- The tuning section now labels whether the slider values are *already active* or *pending apply*. Applying connection settings through the settings button also stops/disarms before changing configuration.
+
+**Hardware verification required:** check Android icon appearance on Samsung Launcher (including its round mask), app build and Wi-Fi camera reconnect, motor STOP, and screen-wake behavior. Do not interpret the on-device local TX stats as physical-car ACK.
