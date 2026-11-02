@@ -46,7 +46,7 @@ public final class CrewVision {
     private volatile boolean enabled;
     private volatile long generation;
     private long lastAcceptedAt;
-    private ObjectDetector detector;
+    private volatile ObjectDetector detector;
 
     public CrewVision(Context context, Listener listener) {
         this.appContext = context.getApplicationContext();
@@ -136,7 +136,7 @@ public final class CrewVision {
                     }
                     main.post(() -> {
                         if (enabled && token == generation)
-                            listener.onPeople(people, SystemClock.elapsedRealtime(), infer);
+                            listener.onPeople(people, now, infer);
                     });
                 } catch (Exception | LinkageError error) {
                     enabled = false;
