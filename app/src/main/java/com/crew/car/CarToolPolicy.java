@@ -7,13 +7,29 @@ package com.crew.car;
 public final class CarToolPolicy {
     public static final int MIN_MOVE_MS = 100;
     public static final int MAX_MOVE_MS = 650;
+    /** Each hold is a bounded lease, never an indefinite autonomous drive. */
+    public static final int MIN_HOLD_MS = 500;
+    public static final int MAX_HOLD_MS = 5000;
 
     private CarToolPolicy() {}
 
     public static boolean isSupported(String name) {
         return "drive_car".equals(name) || "stop_car".equals(name) ||
                 "lock_car".equals(name) || "get_car_status".equals(name) ||
-                "get_camera_status".equals(name) || "get_network_status".equals(name);
+                "get_camera_status".equals(name) || "get_network_status".equals(name) ||
+                "set_drive_state".equals(name);
+    }
+
+    public static String validateHold(String steering, String throttle, int leaseMs) {
+        if (!"left".equals(steering) && !"right".equals(steering) &&
+                !"center".equals(steering) && !"keep".equals(steering))
+            return "blocked: steering must be left/right/center/keep";
+        if (!"forward".equals(throttle) && !"reverse".equals(throttle) &&
+                !"neutral".equals(throttle) && !"keep".equals(throttle))
+            return "blocked: throttle must be forward/reverse/neutral/keep";
+        if (leaseMs < MIN_HOLD_MS || leaseMs > MAX_HOLD_MS)
+            return "blocked: lease_ms must be between 500 and 5000";
+        return null;
     }
 
     /** A null result means valid. All other strings explain why execution is blocked. */

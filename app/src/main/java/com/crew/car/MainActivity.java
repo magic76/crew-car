@@ -49,6 +49,25 @@ public final class MainActivity extends Activity {
     private CameraStream camera;
     private WltoysVideoStream wltoysVideo;
     private GeminiLive gemini;
+    private Button quickTalkButton, interruptButton;
+    private TextView aiDriveStatus;
+    private boolean autoStartMicOnReady;
+    private final Runnable aiDriveTicker = new Runnable() {
+        @Override public void run() {
+            if (!foreground) return;
+            if (aiDriveStatus != null) {
+                if (control.aiHoldActive())
+                    aiDriveStatus.setText("AI 保持中：油門 " +
+                            (control.aiThrottle() > 0 ? "前進" :
+                                    control.aiThrottle() < 0 ? "倒車" : "中立") +
+                            "｜方向 " + (control.aiSteering() < 0 ? "左" :
+                                    control.aiSteering() > 0 ? "右" : "回正") +
+                            "｜剩餘 " + control.aiLeaseRemainingMs() + "ms（逾時停車）");
+                else aiDriveStatus.setText("AI 油門保持：未啟用");
+            }
+            main.postDelayed(this, 250);
+        }
+    };
     private int liveConnectToken;
 
     private EditText host, port, cameraUrl, key, prompt;
@@ -70,7 +89,7 @@ public final class MainActivity extends Activity {
     private boolean drivingMode = true;
     private boolean cameraWanted = true;
     private boolean cameraManualRequested;
-    private boolean foreground;
+    private volatile boolean foreground;
     private boolean cameraRunning;
     private Network cameraNetwork;
     private long cameraSession;
@@ -110,9 +129,13 @@ public final class MainActivity extends Activity {
         camera = new CameraStream(routes, log);
         wltoysVideo = new WltoysVideoStream(routes, log);
         gemini = new GeminiLive(log);
+        control.setAiSafetyGate(() -> foreground && gemini.ready() &&
+                routes.wifi() != null && cameraAgeMs() >= 0 &&
+                cameraAgeMs() <= 2500 && gemini.liveVideoAgeMs() >= 0 &&
+                gemini.liveVideoAgeMs() <= 2500);
         render();
         log.setListener(s -> runOnUiThread(() -> { if (logs != null) logs.setText(s); }));
-        log.i("APP", "Crew Car v0.1.14; Live setup diagnostics and hold-button controls; 10-100ms intervals; no vehicle ACK");
+        log.i("APP", "Crew Car v0.1.15; half-duplex Live and bounded AI drive hold; no vehicle ACK");
         routes.diagnostics();
     }
 
@@ -182,6 +205,14 @@ public final class MainActivity extends Activity {
         brand.setTextSize(17);
         brand.setTypeface(null, Typeface.BOLD);
         topRow.addView(brand, new LinearLayout.LayoutParams(0, dp(38), 1));
+        quickTalkButton = button("AI 說話", v -> quickTalk());
+        quickTalkButton.setBackgroundTintList(android.content.res.ColorStateList.valueOf(
+                Color.rgb(45, 155, 179)));
+        quickTalkButton.setTextColor(Color.WHITE);
+        topRow.addView(quickTalkButton, new LinearLayout.LayoutParams(dp(90), dp(38)));
+        interruptButton = button("打斷 AI", v -> interruptAssistant());
+        interruptButton.setEnabled(false);
+        topRow.addView(interruptButton, new LinearLayout.LayoutParams(dp(88), dp(38)));
         Button retryCamera = button("重連鏡頭", v -> reconnectCamera());
         retryCamera.setTextSize(12);
         topRow.addView(retryCamera, new LinearLayout.LayoutParams(dp(84), dp(38)));
@@ -191,7 +222,8 @@ public final class MainActivity extends Activity {
         netStatus = label(banner, "檢查網路中…", 11);
         cameraStatus = label(banner, "攝影機未連線", 11);
         driverLiveStatus = label(banner, "Gemini Live：尚未連線", 11);
-        for (TextView status : new TextView[]{netStatus, cameraStatus, driverLiveStatus}) {
+        aiDriveStatus = label(banner, "AI 油門保持：未啟用", 11);
+        for (TextView status : new TextView[]{netStatus, cameraStatus, driverLiveStatus, aiDriveStatus}) {
             status.setSingleLine(true);
             status.setEllipsize(android.text.TextUtils.TruncateAt.END);
             status.setPadding(0, 0, 0, 0);
@@ -466,8 +498,10 @@ public final class MainActivity extends Activity {
                 button("斷線 Live", v -> {
                     liveConnectToken++;
                     routes.releaseCellularForLive();
+                    autoStartMicOnReady = false;
                     gemini.disconnect();
                     control.emergencyStop();
+                    updateTalkButtons();
                     liveStatus.setText("Gemini 已手動斷線");
                     if (driverLiveStatus != null) driverLiveStatus.setText("Gemini Live：已手動斷線");
                 }));
@@ -477,7 +511,7 @@ public final class MainActivity extends Activity {
             if (!gemini.sendText(prompt.getText().toString())) log.e("LIVE", "請先連線 Gemini");
             else log.i("LIVE", "text turn sent (content redacted)");
         }), new LinearLayout.LayoutParams(-1, dp(50)));
-        label(root, "Gemini 可使用：drive_car、stop_car、lock_car、get_car_status、get_camera_status、get_network_status。查車況不需要解鎖。", 12);
+        label(root, "Gemini 可使用：drive_car、set_drive_state（最長保持5秒）、stop_car、lock_car、get_car_status、get_camera_status、get_network_status。左側快捷可直接啟動對話。", 12);
         root.addView(button("測試 AI 查詢工具（不移動）", v -> {
             if (!gemini.sendText("請先呼叫 get_car_status、get_camera_status、get_network_status，然後用繁體中文告訴我連線與安全狀態，不要移動小車。")) {
                 log.e("TOOL", "Live disconnected; cannot request tool smoke test");
@@ -734,11 +768,50 @@ public final class MainActivity extends Activity {
         log.i("SAFETY", "USER E-STOP: disarmed, manual re-arm required");
     }
 
+    private void quickTalk() {
+        if (gemini.assistantSpeaking()) {
+            log.i("MIC", "AI is speaking; use interrupt button");
+            return;
+        }
+        if (gemini.ready()) {
+            if (gemini.micRunning()) {
+                autoStartMicOnReady = false;
+                gemini.stopMic();
+                updateTalkButtons();
+            } else {
+                autoStartMicOnReady = false;
+                startMic();
+                updateTalkButtons();
+            }
+            return;
+        }
+        autoStartMicOnReady = true;
+        startGemini();
+        updateTalkButtons();
+    }
+
+    private void interruptAssistant() {
+        control.emergencyStop(); // user interrupt also terminates an active AI cruise lease
+        gemini.interruptSpeech();
+        updateTalkButtons();
+    }
+
+    private void updateTalkButtons() {
+        if (quickTalkButton == null) return;
+        boolean speaking = gemini.assistantSpeaking();
+        quickTalkButton.setText(speaking ? "AI 說話中" :
+                !gemini.ready() ? "連接 AI" :
+                        gemini.micRunning() ? "關麥克風" : "AI 說話");
+        interruptButton.setEnabled(speaking);
+        interruptButton.setVisibility(View.VISIBLE);
+    }
+
     private void startGemini() {
         String apiKey = key.getText().toString().trim();
         main.removeCallbacks(saveGeminiKeyLater);
         saveGeminiKeyLocally();
         if (apiKey.isEmpty()) {
+            autoStartMicOnReady = false;
             liveStatus.setText("請先輸入 Gemini API Key");
             if (driverLiveStatus != null) driverLiveStatus.setText("Gemini Live：未輸入 Key");
             return;
@@ -785,8 +858,26 @@ public final class MainActivity extends Activity {
                     liveStatus.setText(status);
                     if (driverLiveStatus != null)
                         driverLiveStatus.setText("Gemini Live：" + status);
+                    if (status.contains("失敗") || status.contains("中斷"))
+                        autoStartMicOnReady = false;
+                    if (status.contains("已連線") && autoStartMicOnReady) {
+                        autoStartMicOnReady = false;
+                        startMic();
+                    }
+                    updateTalkButtons();
                 });
                 log.i("LIVE", "state updated"); // no credentials
+            }
+            @Override public void onSpeechState(boolean speaking) {
+                runOnUiThread(() -> updateTalkButtons());
+            }
+            @Override public String onDriveState(String steering, String throttle, int leaseMs) {
+                if (!control.armed()) return "blocked: manual safety lock";
+                if (cameraAgeMs() < 0 || cameraAgeMs() > 2500 ||
+                        !gemini.ready() || gemini.liveVideoAgeMs() < 0 ||
+                        gemini.liveVideoAgeMs() > 2500 || routes.wifi() == null)
+                    return "blocked: camera/Live/Wi-Fi stale";
+                return control.holdAiAxes(steering, throttle, leaseMs);
             }
             @Override public void onStop() {
                 control.emergencyStop();
@@ -803,6 +894,10 @@ public final class MainActivity extends Activity {
                         "manual_override", control.manual(),
                         "active_command", control.activeCommand(),
                         "pulse_remaining_ms", control.remainingMs(),
+                        "ai_hold_active", control.aiHoldActive(),
+                        "ai_steering", control.aiSteering(),
+                        "ai_throttle", control.aiThrottle(),
+                        "ai_lease_remaining_ms", control.aiLeaseRemainingMs(),
                         "candidate_wltoys_protocol", control.candidateProtocol(),
                         "last_tx_direction", control.lastTxCommand(),
                         "last_tx_status", control.lastTxStatus(),
@@ -898,6 +993,10 @@ public final class MainActivity extends Activity {
 
     private void startMic() {
         if (!gemini.ready()) { log.e("MIC", "connect Gemini first"); return; }
+        if (gemini.assistantSpeaking()) {
+            log.i("MIC", "assistant speaking; microphone resumes automatically");
+            return;
+        }
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, MIC_PERMISSION_REQUEST);
             return;
@@ -908,8 +1007,14 @@ public final class MainActivity extends Activity {
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(requestCode, permissions, results);
         if (requestCode == MIC_PERMISSION_REQUEST && results.length > 0 &&
-                results[0] == PackageManager.PERMISSION_GRANTED) gemini.startMic();
-        else if (requestCode == MIC_PERMISSION_REQUEST) log.e("MIC", "record audio permission denied");
+                results[0] == PackageManager.PERMISSION_GRANTED) {
+            gemini.startMic();
+            updateTalkButtons();
+        } else if (requestCode == MIC_PERMISSION_REQUEST) {
+            log.e("MIC", "record audio permission denied");
+            autoStartMicOnReady = false;
+            updateTalkButtons();
+        }
     }
 
     @Override protected void onPause() {
@@ -919,6 +1024,8 @@ public final class MainActivity extends Activity {
         foreground = false;
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         main.removeCallbacks(cameraMonitor);
+        main.removeCallbacks(aiDriveTicker);
+        autoStartMicOnReady = false;
         releaseManualInputs();
         if (control != null) control.disarm();
         if (arm != null) uncheck();
@@ -936,10 +1043,14 @@ public final class MainActivity extends Activity {
         updateNetworkStatus();
         main.removeCallbacks(cameraMonitor);
         main.post(cameraMonitor);
+        main.removeCallbacks(aiDriveTicker);
+        main.post(aiDriveTicker);
+        updateTalkButtons();
     }
 
     @Override protected void onDestroy() {
         main.removeCallbacks(cameraMonitor);
+        main.removeCallbacks(aiDriveTicker);
         main.removeCallbacks(saveGeminiKeyLater);
         stopCameraReceiver();
         liveConnectToken++;

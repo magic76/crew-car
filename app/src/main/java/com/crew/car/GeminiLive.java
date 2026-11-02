@@ -39,6 +39,8 @@ public final class GeminiLive {
     public interface Listener {
         void onStatus(String value);
         String onDrive(String direction, int milliseconds);
+        String onDriveState(String steering, String throttle, int leaseMs);
+        void onSpeechState(boolean speaking);
         void onStop();
         void onLock();
         JSONObject onCarStatus();
@@ -56,6 +58,11 @@ public final class GeminiLive {
     private volatile String terminalStatus;
     private volatile boolean ready;
     private volatile boolean micRunning;
+    private volatile boolean assistantSpeaking;
+    private volatile boolean assistantTurnFinished;
+    private volatile boolean ignoreAudioUntilTurnBoundary;
+    private volatile long assistantSpeechTailMs;
+    private volatile long speechGeneration;
     /** Time of the last JPEG accepted into the Live WebSocket send queue. */
     private volatile long lastFrameSent;
     private volatile long videoFramesQueued;
@@ -73,6 +80,38 @@ public final class GeminiLive {
     public GeminiLive(CarLog log) { this.log = log; }
     public boolean ready() { return ready; }
     public boolean micRunning() { return micRunning; }
+    public boolean assistantSpeaking() { return assistantSpeaking; }
+    public boolean micListening() { return micRunning && !assistantSpeaking && ready; }
+    /** A user-only interrupt. Clears buffered speech and requests the server to stop its turn. */
+    public void interruptSpeech() {
+        if (!ready || !assistantSpeaking) return;
+        speaker.clear();
+        assistantTurnFinished = true;
+        assistantSpeechTailMs = 0;
+        ++speechGeneration;
+        ignoreAudioUntilTurnBoundary = true;
+        setAssistantSpeaking(false);
+        // Client content ends the ongoing server generation. The next user
+        // microphone audio remains enabled; do not send a fake user recording.
+        sendText("請停止剛剛的語音回答，現在先聽我說，不要繼續上一段回答。");
+        log.i("AUDIO", "user tapped interrupt; playback flushed, mic allowed");
+    }
+
+    private void setAssistantSpeaking(boolean value) {
+        if (assistantSpeaking == value) return;
+        assistantSpeaking = value;
+        if (listener != null) listener.onSpeechState(value);
+        if (value) log.i("AUDIO", "assistant speaking; microphone recording will pause");
+        else log.i("AUDIO", "assistant finished; microphone may resume");
+    }
+
+    private void resumeMicAfterPlayback(long generation) {
+        if (generation != speechGeneration || !assistantSpeaking || !assistantTurnFinished) return;
+        long delay = assistantSpeechTailMs - SystemClock.elapsedRealtime() + 180;
+        if (delay > 0) {
+            main.postDelayed(() -> resumeMicAfterPlayback(generation), Math.min(250, delay));
+        } else setAssistantSpeaking(false);
+    }
     /** -1 means no frame was accepted by the current Live session. */
     public long liveVideoAgeMs() {
         long last = lastFrameSent;
@@ -95,6 +134,11 @@ public final class GeminiLive {
         this.listener = callback;
         terminalStatus = null;
         this.ready = false;
+        this.assistantSpeaking = false;
+        this.assistantTurnFinished = false;
+        this.ignoreAudioUntilTurnBoundary = false;
+        this.assistantSpeechTailMs = 0;
+        ++speechGeneration;
         this.lastFrameSent = 0L;
         this.videoFramesQueued = 0L;
         client = new OkHttpClient.Builder()
@@ -149,6 +193,7 @@ public final class GeminiLive {
                 cancelSetupTimeout();
                 stopMic();
                 speaker.close();
+                setAssistantSpeaking(false);
                 // Do NOT log Throwable.getMessage: transport errors may contain auth URL.
                 log.e("LIVE", "WS failed class=" + t.getClass().getSimpleName() +
                         " http=" + (response == null ? "none" : response.code()));
@@ -174,6 +219,7 @@ public final class GeminiLive {
                 cancelSetupTimeout();
                 stopMic();
                 speaker.close();
+                setAssistantSpeaking(false);
                 log.i("LIVE", "WS closed code=" + code);
                 String status = terminalStatus;
                 if (status == null) status = "Gemini 已中斷 code=" + code;
@@ -185,12 +231,14 @@ public final class GeminiLive {
     private JSONObject setup() {
         try {
             String instruction = "你是 Crew Car 的繁體中文語音助手。你可以看到低頻率車頭影像，也可聽使用者說話。" +
-                    "可用工具：get_car_status 查安全鎖與最後傳送狀態、get_camera_status 查鏡頭新鮮度、get_network_status 查網路、stop_car 立即送 STOP、lock_car 鎖車、drive_car 短促移動。" +
+                    "可用工具：get_car_status 查本機與 AI 油門保持狀態、get_camera_status 查鏡頭、get_network_status 查網路、stop_car 急停、lock_car 鎖車、drive_car 短促移動、set_drive_state 保持油門與方向。" +
+                    "set_drive_state 的 throttle=forward 表示持續踩油門直到 lease_ms 到期（最長 5000 毫秒）；要一邊保持前進一邊左轉，下一次設定 throttle=keep、steering=left。向右同理，steering=center 回正，throttle=neutral 放開油門。" +
+                    "每次 lease 到期都會停車；不得假裝車子會永遠前進或自行駕駛。" +
                     "硬體只有車頭攝影機，沒有超音波、雷達、碰撞、GPS、里程計或電量遙測等其他感測器。" +
                     "你只能從傳入的即時畫面描述可見物體和大致方向；無法測量真實距離、車速、位置、實際轉角或是否已成功移動。" +
                     "get_camera_status 只讀取畫面接收與 Live 傳送狀態，不包含畫面內容；不要把它誤當避障感測器。" +
                     "先用只讀工具回答車況，不能編造電池量、位置、距離、實際移動、障礙物偵測或感測器資料。" +
-                    "只有使用者明確要求移動，才使用 drive_car，duration_ms 必須在 100–650 毫秒。不得自行連續移動、追人、追車或規劃自主導航。" +
+                    "只有使用者明確要求移動，才使用 drive_car（100–650ms）或 set_drive_state（500–5000ms）；不得自行追人、追車或規劃自主導航。" +
                     "若鏡頭未更新、看不清路況、看見人或障礙物、或指令不明確，請停止並詢問。" +
                     "工具回傳 queued 只代表移動已排入本機佇列；TX 成功也不代表小車回覆或真正移動，絕對不可宣稱完成移動。" +
                     "stop_car 和 lock_car 可隨時呼叫；只有人類可以在手機介面重新解鎖。" +
@@ -237,7 +285,13 @@ public final class GeminiLive {
             }
             JSONObject content = m.optJSONObject("serverContent");
             if (content != null) {
-                if (content.optBoolean("interrupted")) speaker.clear();
+                if (content.optBoolean("interrupted")) {
+                    ignoreAudioUntilTurnBoundary = false;
+                    speaker.clear();
+                    assistantTurnFinished = true;
+                    assistantSpeechTailMs = 0;
+                    setAssistantSpeaking(false);
+                }
                 JSONObject modelTurn = content.optJSONObject("modelTurn");
                 if (modelTurn != null) {
                     JSONArray parts = modelTurn.optJSONArray("parts");
@@ -246,10 +300,25 @@ public final class GeminiLive {
                         if (p == null) continue;
                         JSONObject audio = p.optJSONObject("inlineData");
                         if (audio != null && audio.optString("mimeType").startsWith("audio/")) {
-                            speaker.offer(Base64.decode(audio.optString("data"), Base64.DEFAULT));
+                            if (ignoreAudioUntilTurnBoundary) continue;
+                            byte[] chunk = Base64.decode(audio.optString("data"), Base64.DEFAULT);
+                            speaker.offer(chunk);
+                            assistantTurnFinished = false;
+                            long now = SystemClock.elapsedRealtime();
+                            // 24 kHz 16-bit mono = 48 bytes/ms. Don't reopen mic
+                            // until queued output should have reached the speaker.
+                            assistantSpeechTailMs = Math.max(now, assistantSpeechTailMs)
+                                    + Math.max(1, chunk.length / 48);
+                            setAssistantSpeaking(true);
                         }
                         if (p.has("text") && listener != null) listener.onTranscript(p.optString("text"));
                     }
+                }
+                if (content.optBoolean("turnComplete")) {
+                    ignoreAudioUntilTurnBoundary = false;
+                    assistantTurnFinished = true;
+                    long generation = ++speechGeneration;
+                    main.post(() -> resumeMicAfterPlayback(generation));
                 }
                 forwardTranscript(content.optJSONObject("inputTranscription"), "你");
                 forwardTranscript(content.optJSONObject("outputTranscription"), "Gemini");
@@ -275,6 +344,7 @@ public final class GeminiLive {
         cancelSetupTimeout();
         stopMic();
         speaker.close();
+        setAssistantSpeaking(false);
         log.e("LIVE", diagnostic);
         if (listener != null) listener.onStatus(status);
         ws.close(1000, "setup failed");
@@ -341,7 +411,8 @@ public final class GeminiLive {
                 if (response == null) {
                     JSONObject result;
                     try {
-                        if (safetyOverride && "drive_car".equals(name)) {
+                        if (safetyOverride && ("drive_car".equals(name) ||
+                                "set_drive_state".equals(name))) {
                             result = toolStatus("blocked", "STOP/lock in same tool batch takes priority");
                         } else {
                             result = executeTool(name, call.optJSONObject("args"));
@@ -396,6 +467,20 @@ public final class GeminiLive {
                 String result = listener.onDrive(direction, duration);
                 boolean blocked = result == null || result.startsWith("blocked");
                 return toolStatus(blocked ? "blocked" : "queued", result == null ? "no result" : result)
+                        .put("device_acknowledged", false)
+                        .put("motion_verified", false);
+            }
+            case "set_drive_state": {
+                String steering = args == null ? "" : args.optString("steering", "");
+                String throttle = args == null ? "" : args.optString("throttle", "");
+                int lease = args == null ? -1 : args.optInt("lease_ms", -1);
+                String violation = CarToolPolicy.validateHold(steering, throttle, lease);
+                if (violation != null) return toolStatus("blocked", violation);
+                String result = listener.onDriveState(steering, throttle, lease);
+                boolean blocked = result == null || result.startsWith("blocked");
+                return toolStatus(blocked ? "blocked" : "queued",
+                        result == null ? "no result" : result)
+                        .put("lease_ms", lease)
                         .put("device_acknowledged", false)
                         .put("motion_verified", false);
             }
@@ -492,9 +577,29 @@ public final class GeminiLive {
                 r.startRecording();
                 log.i("MIC", "16k PCM started");
                 byte[] buf = new byte[3200]; // 100ms
+                boolean recording = true;
+                boolean sentStreamEndForSpeech = false;
                 while (micRunning && ready) {
+                    if (assistantSpeaking) {
+                        if (recording) {
+                            r.stop();
+                            recording = false;
+                        }
+                        if (!sentStreamEndForSpeech && socket != null) {
+                            socket.send("{\"realtimeInput\":{\"audioStreamEnd\":true}}");
+                            sentStreamEndForSpeech = true;
+                        }
+                        Thread.sleep(40);
+                        continue;
+                    }
+                    if (!recording) {
+                        r.startRecording();
+                        recording = true;
+                        sentStreamEndForSpeech = false;
+                    }
                     int size = r.read(buf, 0, buf.length);
-                    if (size > 0 && socket != null && socket.queueSize() < 1024 * 1024) {
+                    if (size > 0 && !assistantSpeaking && socket != null &&
+                            socket.queueSize() < 1024 * 1024) {
                         JSONObject m = new JSONObject().put("realtimeInput", new JSONObject()
                                 .put("audio", new JSONObject()
                                         .put("mimeType", "audio/pcm;rate=16000")
@@ -535,6 +640,9 @@ public final class GeminiLive {
         if (socket != null) socket.close(1000, "user close");
         socket = null;
         speaker.close();
+        ++speechGeneration;
+        ignoreAudioUntilTurnBoundary = false;
+        setAssistantSpeaking(false);
         if (client != null) {
             client.dispatcher().executorService().shutdown();
             client.connectionPool().evictAll();

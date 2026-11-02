@@ -8,6 +8,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 
 /** Sole serial writer to the car. An explicit STOP packet is sent when movement times out. */
 public final class CarControl {
@@ -32,6 +33,10 @@ public final class CarControl {
     private volatile boolean manual;
     private volatile long deadline;
     private volatile String active = "stop";
+    private volatile boolean aiHoldActive;
+    private volatile int aiSteer, aiThrottle;
+    private volatile BooleanSupplier aiSafetyGate = () -> false;
+    private volatile long lastAiSafetyCheckAt;
     private final AtomicLong motionEpoch = new AtomicLong();
     private volatile String lastTxCommand = "none";
     private volatile String lastTxStatus = "not_sent";
@@ -50,6 +55,25 @@ public final class CarControl {
         this.network = network;
         this.log = log;
         io.scheduleAtFixedRate(() -> {
+            if (aiHoldActive && armed) {
+                long now = SystemClock.elapsedRealtime();
+                if (now >= deadline) {
+                    aiHoldActive = false;
+                    stopInternal("AI lease expired");
+                    return;
+                }
+                if (now - lastAiSafetyCheckAt >= 100) {
+                    lastAiSafetyCheckAt = now;
+                    boolean safe;
+                    try { safe = aiSafetyGate.getAsBoolean(); } catch (Exception e) { safe = false; }
+                    if (!safe) {
+                        aiHoldActive = false;
+                        armed = false; // fail closed: require human to re-arm after lost safety
+                        stopInternal("AI camera/Live/network gate stale");
+                        return;
+                    }
+                }
+            }
             if (armed && network.wifi() == null) {
                 log.e("SAFETY", "Wi-Fi lost; disarming");
                 disarm();
@@ -80,7 +104,19 @@ public final class CarControl {
     }
     public boolean armed() { return armed; }
     public boolean manual() { return manual; }
-    public void setManual(boolean value) { manual = value; }
+    public void setManual(boolean value) {
+        if (value && aiHoldActive) emergencyStop();
+        manual = value;
+    }
+    public void setAiSafetyGate(BooleanSupplier gate) {
+        aiSafetyGate = gate == null ? () -> false : gate;
+    }
+    public boolean aiHoldActive() { return aiHoldActive && armed && deadline > SystemClock.elapsedRealtime(); }
+    public int aiSteering() { return aiHoldActive() ? aiSteer : 0; }
+    public int aiThrottle() { return aiHoldActive() ? aiThrottle : 0; }
+    public long aiLeaseRemainingMs() {
+        return aiHoldActive() ? Math.max(0, deadline - SystemClock.elapsedRealtime()) : 0;
+    }
     public String activeCommand() { return active; }
     public long remainingMs() { return "stop".equals(active) ? 0 : Math.max(0, deadline - SystemClock.elapsedRealtime()); }
     public String lastTxCommand() { return lastTxCommand; }
@@ -105,6 +141,7 @@ public final class CarControl {
         if (next == null || next.tuning == null)
             throw new IllegalArgumentException("missing control tuning");
         motionEpoch.incrementAndGet();
+        aiHoldActive = false;
         boolean stopPrevious = armed || !"stop".equals(active);
         armed = false;
         manual = false;
@@ -147,6 +184,7 @@ public final class CarControl {
     }
 
     public void disarm() {
+        aiHoldActive = false;
         boolean stopCurrent = armed || !"stop".equals(active);
         armed = false;
         manual = false;
@@ -173,6 +211,7 @@ public final class CarControl {
             if ("stop".equals(direction)) { emergencyStop(); return "stopped"; }
             if (!armed) return "blocked: control locked";
             if (fromAi && manual) return "blocked: manual priority";
+            if (fromAi && aiHoldActive) emergencyStop(); // one AI control mode at a time
             int ms = Math.max(100, Math.min(fromAi ? 650 : 500, requestedMs));
             final String command = direction;
             final long epoch = motionEpoch.get();
@@ -189,6 +228,62 @@ public final class CarControl {
         } catch (Exception e) {
             return "blocked: " + e.getMessage();
         }
+    }
+
+    /**
+     * One tool call creates a bounded drive lease, maintained by the existing
+     * 10-100ms motor ticker. Caller must verify camera/Live freshness first.
+     * Safety guard rechecked every 100ms and expiry always sends neutral.
+     */
+    public String holdAiAxes(String steering, String throttle, int leaseMs) {
+        String violation = CarToolPolicy.validateHold(steering, throttle, leaseMs);
+        if (violation != null) return violation;
+        if (!armed) return "blocked: control locked";
+        if (manual) return "blocked: manual priority";
+        if (!config.wltoys) return "blocked: sustained two-axis control requires WL profile";
+        boolean prior = aiHoldActive();
+        if (("keep".equals(steering) || "keep".equals(throttle)) && !prior)
+            return "blocked: keep requires an active AI drive lease";
+        int steer = "keep".equals(steering) ? aiSteer :
+                "left".equals(steering) ? -1 : "right".equals(steering) ? 1 : 0;
+        int gas = "keep".equals(throttle) ? aiThrottle :
+                "forward".equals(throttle) ? 1 : "reverse".equals(throttle) ? -1 : 0;
+        if (steer == 0 && gas == 0) {
+            emergencyStop();
+            return "stopped: both axes neutral";
+        }
+        boolean safe;
+        try { safe = aiSafetyGate.getAsBoolean(); } catch (Exception e) { safe = false; }
+        if (!safe) return "blocked: camera/Live/network safety gate";
+        final String cmd = "axes:" + steer + ":" + gas;
+        final long epoch = motionEpoch.get();
+        io.execute(() -> {
+            if (!armed || manual || epoch != motionEpoch.get()) return;
+            try {
+                if (!aiSafetyGate.getAsBoolean()) {
+                    armed = false;
+                    stopInternal("AI gate rejected");
+                    return;
+                }
+            } catch (Exception e) {
+                armed = false;
+                stopInternal("AI gate failure");
+                return;
+            }
+            aiSteer = steer;
+            aiThrottle = gas;
+            aiHoldActive = true;
+            deadline = SystemClock.elapsedRealtime() + leaseMs;
+            lastAiSafetyCheckAt = SystemClock.elapsedRealtime();
+            if (!cmd.equals(active)) {
+                active = cmd;
+                sendInternal(cmd);
+            }
+            log.i("AI", "drive lease accepted steering=" + steer + " throttle=" + gas +
+                    " remainingMs=" + leaseMs + " (no motor ACK)");
+        });
+        return "queued AI drive lease steering=" + steer + " throttle=" + gas +
+                " expires_in_ms=" + leaseMs + " (no hardware ACK)";
     }
 
     /** Manual two-axis input; the OEM profile can encode throttle and steering together. */
@@ -221,6 +316,9 @@ public final class CarControl {
     }
 
     public void emergencyStop() {
+        aiHoldActive = false;
+        aiSteer = 0;
+        aiThrottle = 0;
         motionEpoch.incrementAndGet();
         Config target = config;
         deadline = 0;
@@ -233,6 +331,10 @@ public final class CarControl {
     }
 
     private void stopInternal(String reason, Config target) {
+        motionEpoch.incrementAndGet(); // invalidate every pending motor command on fail-safe STOP
+        aiHoldActive = false;
+        aiSteer = 0;
+        aiThrottle = 0;
         active = "stop";
         deadline = 0;
         log.i("SAFETY", "STOP reason=" + reason);

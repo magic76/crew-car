@@ -8,6 +8,7 @@
 | `get_camera_status` | none | Last received frame age/resolution and camera adapter, NOT computer vision or obstacle sensors |
 | `get_network_status` | none | Android Wi-Fi transport and validated Internet path for Gemini, without claiming the SSID is definitely the car |
 | `drive_car` | `direction` = forward/backward/left/right, `duration_ms` = 100–650 | Queue **one bounded pulse** if explicitly armed, not in manual override, Wi-Fi present and frame fresher than 2.5 seconds |
+| `set_drive_state` | steering=left/right/center/keep, throttle=forward/reverse/neutral/keep, lease_ms=500–5000 | Hold one bounded combined motor state; `keep` carries the matching axis from a still-active AI lease; camera/Live/Wi-Fi checked continuously, expiry sends STOP |
 | `stop_car` | none | Send STOP even while locked; cannot guarantee packet delivery after a Wi-Fi failure |
 | `lock_car` | none | Disarm motor control and queue STOP; only a user can unlock using the Activity checkbox |
 
@@ -64,3 +65,9 @@ The user's car has **one camera** and remote motor control. There are **no other
 - AI motor requests now additionally require a camera image to have been queued to the active Gemini Live session within 2.5s. This is necessary but not sufficient to prove visual perception or physical safety.
 - Gemini can describe *visible* features from received frames, but cannot reliably calculate speed, safe clearance, traveled meters or true steering angle from the monocular camera alone.
 - No on-device autonomous route planning or obstacle avoidance is enabled; always retain human oversight, physical shutdown access and short bounded pulses.
+
+## v0.1.15 half-duplex + persistent AI pedal
+
+The new `set_drive_state` is a *time-limited command state*, not measured vehicle speed or autonomous cruise control. One call keeps periodically sending the same throttle/steering bytes while a 500–5000ms lease is active; no 650ms pulse-repetition tool loop is needed. Expiry, user STOP/interrupt, manual steering takeover, camera/Live stale, Wi-Fi loss, and app pause cancel the lease. See `docs/AI_TALK_DRIVE_QA.md` for exact scenarios.
+
+While Gemini outputs audio, the physical AudioRecord microphone is paused and an audioStreamEnd is sent; it resumes after turnComplete and audio drain. The only deliberate barge-in path is the landscape **打斷 AI** button, which clears playback and sends a clientContent interruption instruction. This is not echo cancellation.

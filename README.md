@@ -109,3 +109,11 @@ Crew Car now requests a separate Android **cellular Internet Network**, waits un
 Requires `CHANGE_NETWORK_STATE` (normal Android permission) and working mobile data. Gemini's network request is cancelled after a bounded timeout or when Live disconnects. The UI reports when it is preparing mobile data. No Termux server or root is required.
 
 [Samsung S25 / dual-network QA and ADB diagnosis](docs/DUAL_NETWORK_QA.md).
+
+## v0.1.15: AI conversation shortcut + bounded accelerator hold
+
+In landscape driving mode, **AI 說話** directly connects Gemini Live using the locally encrypted Key and enables the microphone (with permission), without opening advanced settings. During Gemini speech, the microphone recording and uploads pause; when speech and its playback buffer finish, mic capture resumes. The visible **打斷 AI** action explicitly flushes output and interrupts the reply, simultaneously STOPping any AI hold.
+
+The new `set_drive_state` Gemini tool holds steering and throttle for 500–5000 ms in the existing car UDP heartbeat, with independent `keep` fields. The local `get_car_status` and driver HUD expose AI pedal and lease countdown. Any stale camera / Live video, manual priority, lock, Wi-Fi loss, app pause or lease expiry sends neutral STOP (safety gate failure also locks). **Fixed motor command is not measured cruise-control speed:** this car has a camera but no speed/odometry/obstacle sensors.
+
+See [AI voice + pedal lease acceptance](docs/AI_TALK_DRIVE_QA.md).
