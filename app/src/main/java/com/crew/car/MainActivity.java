@@ -87,6 +87,10 @@ public final class MainActivity extends Activity {
                     (currentCameraAdapter == 1 && !camera.isRunning()))) {
                 stopCameraReceiver();
             }
+            if (arm != null && arm.isChecked() && !control.armed()) {
+                log.i("SAFETY", "car is disarmed; syncing UI lock state");
+                uncheck();
+            }
             maybeStartCamera();
             updateNetworkStatus();
             updateTxStatus();
@@ -520,6 +524,7 @@ public final class MainActivity extends Activity {
     }
 
     private void uncheck() {
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         changingConfig = true;
         arm.setChecked(false);
         changingConfig = false;
