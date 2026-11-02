@@ -175,3 +175,11 @@ After enabling **辨識**, tap a person to select them. To try supervised follow
 **This is experimental, not autonomous safe navigation.** A monocular camera cannot reliably measure distance or see every obstacle; there is no obstacle avoidance, motor speed feedback or packet ACK. Test with wheels raised, then only on empty private ground under direct supervision, with physical power disconnect accessible. Avoid children, pets, traffic, stairs or uncontrolled public settings. Gemini motor tools are not used by the local follow loop.
 
 Manual RC button hold semantics and its 180ms renewal / 500ms watchdog remain unchanged. See [full-bleed Vision Follow QA](docs/VISION_FOLLOW_FULLBLEED_QA.md).
+
+## v0.1.22 — floating emergency STOP, compact unlock in header
+
+The previously permanent **62dp bottom footer** is gone, giving full-bleed FPV more vertical room. A small **🔒 已上鎖 / 🔓 已解鎖** button lives in the header instead. Unlock needs an explicit confirmation and uses the **same existing** vehicle profile, Wi-Fi, configuration and motor-arm checks, never automatic arming. Locking sends STOP.
+
+The red **■ 急停** floats in the bottom-right of the cockpit, always above the driving controls and the settings sheet. It triggers STOP **on finger down**, including while another finger holds the throttle. The reverse button's visible and active hit region is shortened above the STOP with a tested **12dp gap**, so tapping STOP cannot be a reverse command. The tuning status moves into the Controls settings tab. Settings still stops/disarms, shows a locked indicator and never enables the header unlock until returning to driving.
+
+**No changes:** motor sender/protocol, 180ms manual renewal, 500ms watchdog, Gemini tools, local person-following safety/8-second authorization, FPV decoding or display cutout insets. See [v0.1.22 on-device QA](docs/COMPACT_DRIVER_LOCK_QA.md). This change requires local build and physical-device verification; it is not a verified hardware STOP implementation.
