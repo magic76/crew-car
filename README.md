@@ -131,3 +131,15 @@ Updated [tool contracts](docs/GEMINI_TOOLS.md) and [regression QA](docs/AI_TALK_
 The hand-operated left/right steering and right-hand forward/reverse buttons were rolled back **exactly to the v0.1.14 touch implementation**. An active accelerator touch stops when the original pointer lifts/cancels **or leaves its selected forward/reverse button area** (you must press the button again). The UI sends a manual lease renewal every **180ms**, and the internal **500ms deadman timeout** restores the previous motor control behavior. The existing car-specific UDP transmitter/tuning still sends packets at the configured period while a manual command is active. User must deliberately arm the car, STOP is unchanged, and motor ACK remains unavailable.
 
 This rollback targets **manual control only**: Gemini Live, AI command tools, Wi-Fi/4G split, camera, KL FPV scaffolding, and other features remain on their current branch code and are intentionally **not** fixed or redesigned yet. Follow [manual rollback QA](docs/MANUAL_CONTROL_ROLLBACK_QA.md).
+
+## v0.1.18 — ergonomic landscape driving cockpit (UI-only)
+
+The driving cockpit now dedicates **60%** of available width to the central FPV feed by default (side controls each **20%**, configurable 18–26%). Four status rows are condensed into one 28dp instrument strip; camera and Gemini continue using the original stream and model interfaces.
+
+- **Left thumb:** large left/right steering buttons by default; optional legacy virtual joystick with adjustable deadzone. The output is still the same discrete -1/0/1 steering axis.
+- **Right thumb:** larger forward/reverse hold buttons, consistent with the manual pointer-up/pointer-leaves-button neutral behavior in v0.1.17. A second finger can steer without releasing throttle.
+- **Control feedback:** local accepted-input highlighting is shown only when the car is armed; haptic feedback on meaningful button/axis changes is optional. UI highlighting does not imply car acknowledgement.
+- **操控 quick settings:** steering mode, paired side width, forward/reverse vertical gap and position, joystick deadzone, and haptics; stored in SharedPreferences, with restore defaults. Opening and applying layout changes first STOPs/disarms and never re-arms on the user's behalf.
+- **Compatibility:** `CarControl.java`, the 180ms manual keepalive, the 500ms watchdog, OEM motor packets, Wi-Fi/Gemini and the separate AI tools are **unchanged**. Full advanced Settings redesign is intentionally deferred until the driver UI is accepted.
+
+See [v0.1.18 driving UX QA](docs/DRIVER_UX_V018_QA.md) for detailed dual-thumb, stop, geometry and rotation acceptance checks.
