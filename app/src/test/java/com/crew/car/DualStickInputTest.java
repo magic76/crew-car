@@ -42,7 +42,7 @@ public final class DualStickInputTest {
         assertEquals(-1, s.throttle());
         s.move(2, 0, 0, W, H);
         assertEquals(1, s.throttle());
-        assertEquals(-1, s.steering() < 0 ? -1 : s.steering()); // still controlled by left
+        assertEquals(1, s.steering()); // the left pointer still owns steering
     }
 
     @Test public void centerTouchesDoNotTriggerMotion() {
