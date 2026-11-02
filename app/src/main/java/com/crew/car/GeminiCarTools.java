@@ -28,8 +28,25 @@ public final class GeminiCarTools {
                                 .put("description", "Required short pulse between 100 and 650 milliseconds inclusive")))
                 .put("required", new JSONArray().put("direction").put("duration_ms"));
 
+        JSONObject hold = action("set_drive_state",
+                "Set a bounded motor state for up to 5 seconds. This is the accelerator being HELD, NOT one button tap. " +
+                "To continue straight while changing steering, send throttle=keep and steering=left/right/center. " +
+                "To keep steering while adjusting gas, send steering=keep. A previous AI state must still be active for keep. " +
+                "No endless cruise: renew explicitly before expiration, otherwise the watchdog stops the car. " +
+                "Only one human-authorized bounded motion at a time; never navigate unattended.");
+        hold.getJSONObject("parameters")
+                .put("properties", new JSONObject()
+                        .put("steering", new JSONObject().put("type", "STRING")
+                                .put("enum", new JSONArray().put("left").put("right").put("center").put("keep")))
+                        .put("throttle", new JSONObject().put("type", "STRING")
+                                .put("enum", new JSONArray().put("forward").put("reverse").put("neutral").put("keep")))
+                        .put("lease_ms", new JSONObject().put("type", "INTEGER")
+                                .put("description", "Duration from 500 to 5000 ms; ends automatically with STOP unless renewed")));
+        hold.getJSONObject("parameters").put("required",
+                new JSONArray().put("steering").put("throttle").put("lease_ms"));
+
         return new JSONArray()
-                .put(drive)
+                .put(drive).put(hold)
                 .put(action("stop_car",
                         "Send immediate neutral/STOP command. Allowed even when locked. Does not guarantee the car received it if Wi-Fi is offline."))
                 .put(action("lock_car",
