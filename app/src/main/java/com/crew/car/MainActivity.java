@@ -158,7 +158,7 @@ public final class MainActivity extends Activity {
                     (visionOverlay == null || visionOverlay.targetLost() ||
                     visionOverlay.selectedTarget() == null ||
                     SystemClock.elapsedRealtime() - visionOverlay.lastFrameAt() > 400)) {
-                control.stopVisionFollow();
+                control.stopVisionFollow("person lost or inference stale");
                 updateFollowButton();
                 log.i("FOLLOW", "target or image stale; STOP");
             }
@@ -1395,7 +1395,7 @@ public final class MainActivity extends Activity {
                 visionOverlay.selectedTarget() == null ||
                 visionOverlay.targetLost() ||
                 SystemClock.elapsedRealtime() - visionOverlay.lastFrameAt() > 350 ||
-                cameraAgeMs() < 0 || cameraAgeMs() > 1200 || routes.wifi() == null ||
+                visionCameraAgeMs() < 0 || visionCameraAgeMs() > 650 || routes.wifi() == null ||
                 !control.armed() || control.manual() || control.aiHoldActive() ||
                 activeProfile != CarProfile.WL_TECH) {
             android.widget.Toast.makeText(this,
@@ -1436,14 +1436,14 @@ public final class MainActivity extends Activity {
         long age = visionMetrics.resultAgeMs(SystemClock.elapsedRealtime());
         PersonTracker.Box target = visionOverlay == null ? null : visionOverlay.selectedTarget();
         String info = String.format(java.util.Locale.US,
-                "Vision %.1f FPS  |  推論 %dms  |  擷取→回報 %dms  |  影格 %s\\n" +
+                "Vision %.1f FPS  |  推論 %dms  |  擷取→回報 %dms  |  影格 %s\n" +
                 "人數 %d  |  目標 %.0f%%  |  中心偏差 %+.2f  |  %s",
                 visionMetrics.fps(), visionMetrics.inferenceMs(),
                 visionMetrics.processingMs(), age < 0 ? "無" : age + "ms",
                 visionMetrics.people(), target == null ? 0f : target.score * 100f,
                 target == null ? 0f : target.centerX() - .5f, control.owner());
         String stop = control.lastStopReason();
-        visionDebugHud.setText(info + "\\n停止原因：" + stop +
+        visionDebugHud.setText(info + "\n停止原因：" + stop +
                 " | STOP 本地送出 " + control.lastStopLocalDelayMs() +
                 "ms（無車端 ACK）");
     }
@@ -1465,7 +1465,7 @@ public final class MainActivity extends Activity {
         updateFollowButton();
         updateVisionDebugHud();
         log.i("VISION", visionEnabled ?
-                "offline person detection enabled (no automatic steering/throttle)" :
+                "offline person detection enabled; motor follow separately authorized" :
                 "person detection stopped, target cleared");
     }
 
