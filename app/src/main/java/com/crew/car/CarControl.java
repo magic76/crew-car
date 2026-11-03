@@ -36,6 +36,12 @@ public final class CarControl {
     private volatile String active = "stop";
     private volatile boolean aiHoldActive;
     private volatile boolean visionFollowActive;
+    private volatile boolean approachPulseActive;
+    private volatile boolean approachPending;
+    private volatile long approachPermitUntil;
+    private volatile int approachPulsesRemaining;
+    private volatile long lastApproachPulseAt;
+    private volatile BooleanSupplier approachSafetyGate = () -> false;
     private volatile long visionFollowLimitAt;
     private volatile BooleanSupplier visionSafetyGate = () -> false;
     private volatile int aiSteer, aiThrottle;
@@ -67,6 +73,20 @@ public final class CarControl {
         this.network = network;
         this.log = log;
         io.scheduleAtFixedRate(() -> {
+            if (approachPulseActive) {
+                long now = SystemClock.elapsedRealtime();
+                boolean safe;
+                try { safe = approachSafetyGate.getAsBoolean(); }
+                catch (Exception ignored) { safe = false; }
+                if (!armed || manual || !safe || now >= deadline) {
+                    boolean normalEnd = armed && !manual && safe && now >= deadline;
+                    approachPulseActive = false;
+                    if (!normalEnd) armed = false;
+                    stopInternal(normalEnd ? "target nudge elapsed" :
+                            "target nudge safety gate stale");
+                    return;
+                }
+            }
             if (visionFollowActive) {
                 long now = SystemClock.elapsedRealtime();
                 boolean safe;
@@ -140,7 +160,8 @@ public final class CarControl {
         txFailures = 0;
     }
     public MotorAuthorityPolicy.Owner owner() {
-        return MotorAuthorityPolicy.current(armed, manual, aiHoldActive, visionFollowActive);
+        return MotorAuthorityPolicy.current(armed, manual,
+                aiHoldActive || approachPulseActive, visionFollowActive);
     }
     public String lastStopReason() { return lastStopReason; }
     public long lastStopLocalDelayMs() { return lastStopLocalDelayMs; }
@@ -150,10 +171,30 @@ public final class CarControl {
     }
     public long lastStopSentAt() { return lastStopSentAt; }
     public long stopBurstAttempts() { return stopBurstAttempts; }
+    public boolean approachAuthorized() {
+        return armed && approachPermitUntil > SystemClock.elapsedRealtime() &&
+                approachPulsesRemaining > 0;
+    }
+    public boolean approachPulseActive() { return approachPulseActive && armed; }
+    public int approachPulsesRemaining() {
+        return approachAuthorized() ? approachPulsesRemaining : 0;
+    }
+    public long approachPermitRemainingMs() {
+        return approachAuthorized() ?
+                Math.max(0, approachPermitUntil - SystemClock.elapsedRealtime()) : 0;
+    }
+    public void setApproachSafetyGate(BooleanSupplier gate) {
+        approachSafetyGate = gate == null ? () -> false : gate;
+    }
     public boolean armed() { return armed; }
     public boolean manual() { return manual; }
     public void setManual(boolean value) {
-        if (value && (aiHoldActive || visionFollowActive)) emergencyStop();
+        if (value) {
+            if (aiHoldActive || visionFollowActive || approachPulseActive)
+                emergencyStop();
+            approachPermitUntil = 0;
+            approachPulsesRemaining = 0;
+        }
         manual = value;
     }
     public void setAiSafetyGate(BooleanSupplier gate) {
@@ -199,6 +240,10 @@ public final class CarControl {
             throw new IllegalArgumentException("Cannot send WL commands to KL");
         motionEpoch.incrementAndGet();
         aiHoldActive = false;
+        approachPulseActive = false;
+        approachPending = false;
+        approachPermitUntil = 0;
+        approachPulsesRemaining = 0;
         visionFollowActive = false;
         visionFollowLimitAt = 0;
         aiSteerReleaseAt = 0;
@@ -246,6 +291,10 @@ public final class CarControl {
     }
 
     public void disarm() {
+        approachPulseActive = false;
+        approachPending = false;
+        approachPermitUntil = 0;
+        approachPulsesRemaining = 0;
         visionFollowActive = false;
         aiHoldActive = false;
         aiSteerReleaseAt = 0;
@@ -276,6 +325,8 @@ public final class CarControl {
             if ("stop".equals(direction)) { emergencyStop(); return "stopped"; }
             if (!armed) return "blocked: control locked";
             if (fromAi && manual) return "blocked: manual priority";
+            if (fromAi && (approachAuthorized() || approachPulseActive))
+                return "blocked: target direction mode requires approach_target only";
             if (fromAi && visionFollowActive) return "blocked: visual follow owns controls";
             if (fromAi && aiHoldActive)
                 return "blocked: throttle is held; use steer_car or set_drive_state with throttle=keep (no brake sent)";
@@ -312,6 +363,8 @@ public final class CarControl {
         if (!armed) return "blocked: control locked";
         if (manual) return "blocked: manual priority";
         if (visionFollowActive) return "blocked: visual follow owns controls";
+        if (approachAuthorized() || approachPulseActive)
+            return "blocked: target direction mode forbids cruise leases";
         if (!MotorAuthorityPolicy.canClaim(owner(), MotorAuthorityPolicy.Owner.GEMINI) &&
                 !MotorAuthorityPolicy.canUpdate(owner(), MotorAuthorityPolicy.Owner.GEMINI))
             return "blocked: motor authority unavailable";
@@ -349,9 +402,13 @@ public final class CarControl {
             }
             aiSteer = steer;
             aiThrottle = gas;
-            aiSteerReleaseAt = 0; // a fresh state cancels previous short-turn timer
+            // A persistent left/right turn makes the RC car circle. Always re-center
+            // steering quickly, even if the human explicitly requested long throttle.
+            long now = SystemClock.elapsedRealtime();
+            aiSteerReleaseAt = steer == 0 ? 0 :
+                    now + TargetApproachPolicy.TURN_RECENTER_MS;
             aiHoldActive = true;
-            deadline = SystemClock.elapsedRealtime() + leaseMs;
+            deadline = now + leaseMs;
             lastAiSafetyCheckAt = SystemClock.elapsedRealtime();
             if (!cmd.equals(active)) {
                 active = cmd;
@@ -402,6 +459,86 @@ public final class CarControl {
         });
         return "queued steering=" + direction + " for " + holdMs +
                 "ms; throttle remains held, original cruise deadline unchanged";
+    }
+
+    /**
+     * Explicitly authorize a small number of coarse *front-bearing* nudges.
+     * This is not vision tracking, target detection, autonomous navigation or
+     * physical distance estimation. Permission alone sends NO motor command.
+     */
+    public synchronized String beginApproachAssist() {
+        if (!config.wltoys || config.carProfile != CarProfile.WL_TECH)
+            return "blocked: target nudge requires WL Tech profile";
+        if (!MotorAuthorityPolicy.canClaim(owner(), MotorAuthorityPolicy.Owner.GEMINI) ||
+                !"stop".equals(active) || approachPending)
+            return "blocked: car must be armed, stationary, no other drive owner";
+        boolean safe;
+        try { safe = approachSafetyGate.getAsBoolean(); }
+        catch (Exception ignored) { safe = false; }
+        if (!safe) return "blocked: Gemini/Wi-Fi/foreground gate unavailable";
+        approachPermitUntil = SystemClock.elapsedRealtime() +
+                TargetApproachPolicy.AUTHORIZATION_MS;
+        approachPulsesRemaining = TargetApproachPolicy.MAX_PULSES;
+        lastApproachPulseAt = 0;
+        log.i("TARGET", "human authorized 3 forward-only nudges for 20s");
+        return "target nudge authorized for at most 3 pulses / 20s";
+    }
+
+    public synchronized void cancelApproachAssist() {
+        approachPermitUntil = 0;
+        approachPulsesRemaining = 0;
+        approachPending = false;
+        if (approachPulseActive) emergencyStop();
+    }
+
+    /**
+     * Uses existing serialized motor sender. Each command includes throttle+steer
+     * in ONE WL packet; no autonomous chaining, reversing or in-place turning.
+     */
+    public synchronized String approachTarget(String bearing, int durationMs) {
+        String invalid = TargetApproachPolicy.validate(bearing, durationMs);
+        if (invalid != null) return invalid;
+        long now = SystemClock.elapsedRealtime();
+        if (!approachAuthorized() || !config.wltoys || !armed)
+            return "blocked: user must authorize target direction first";
+        if (manual || visionFollowActive || aiHoldActive || approachPulseActive ||
+                approachPending || !"stop".equals(active) ||
+                !MotorAuthorityPolicy.canClaim(owner(), MotorAuthorityPolicy.Owner.GEMINI))
+            return "blocked: another motor command has priority";
+        if (lastApproachPulseAt > 0 &&
+                now - lastApproachPulseAt < TargetApproachPolicy.MIN_PULSE_SPACING_MS)
+            return "blocked: wait for previous nudge to settle";
+        boolean safe;
+        try { safe = approachSafetyGate.getAsBoolean(); }
+        catch (Exception ignored) { safe = false; }
+        if (!safe) return "blocked: Gemini/Wi-Fi/foreground gate unavailable";
+        final long epoch = motionEpoch.get();
+        final long requestedAt = now;
+        final int steer = TargetApproachPolicy.steering(bearing);
+        approachPending = true;
+        io.execute(() -> {
+            approachPending = false;
+            long started = SystemClock.elapsedRealtime();
+            if (started - requestedAt > 250 || epoch != motionEpoch.get() ||
+                    !approachAuthorized() || manual || visionFollowActive ||
+                    aiHoldActive || approachPulseActive || !"stop".equals(active) ||
+                    !MotorAuthorityPolicy.canClaim(owner(), MotorAuthorityPolicy.Owner.GEMINI))
+                return;
+            boolean stillSafe;
+            try { stillSafe = approachSafetyGate.getAsBoolean(); }
+            catch (Exception ignored) { stillSafe = false; }
+            if (!stillSafe) return;
+            approachPulsesRemaining--;
+            lastApproachPulseAt = started;
+            approachPulseActive = true;
+            deadline = started + durationMs;
+            active = "approach:" + steer + ":1";
+            sendInternal(active); // forward and steering in one LOW-power packet
+            log.i("TARGET", "short front-bearing nudge=" + steer +
+                    " durationMs=" + durationMs + " remaining=" +
+                    approachPulsesRemaining + " no car ACK");
+        });
+        return "queued short forward+steer nudge; stops automatically; no car ACK";
     }
 
     /**
@@ -508,12 +645,22 @@ public final class CarControl {
     public void emergencyStop() { emergencyStop("E-STOP"); }
 
     private void emergencyStop(String reason) {
+        approachPulseActive = false;
+        approachPending = false;
+        approachPermitUntil = 0;
+        approachPulsesRemaining = 0;
         lastStopReason = reason;
         final long stopRequestedAt = SystemClock.elapsedRealtime();
         lastStopRequestedAt = stopRequestedAt;
         lastStopLocalDelayMs = -1;
         visionFollowActive = false;
         visionFollowLimitAt = 0;
+        approachPulseActive = false;
+        approachPending = false;
+        if (!"target nudge elapsed".equals(reason)) {
+            approachPermitUntil = 0;
+            approachPulsesRemaining = 0;
+        }
         aiSteerReleaseAt = 0;
         aiHoldActive = false;
         aiSteer = 0;
@@ -577,7 +724,13 @@ public final class CarControl {
         }
         try {
             byte[] bytes;
-            if (c.wltoys && direction.startsWith("vision:")) {
+            if (c.wltoys && direction.startsWith("approach:")) {
+                String[] axes = direction.split(":");
+                if (axes.length != 3 || !"1".equals(axes[2]))
+                    throw new IllegalArgumentException("bad approach command");
+                CarTuning gentle = new CarTuning(c.tuning.intervalMs, 50, 50);
+                bytes = WltoysProtocol.control(Integer.parseInt(axes[1]), 1, gentle);
+            } else if (c.wltoys && direction.startsWith("vision:")) {
                 String[] axes = direction.split(":");
                 if (axes.length != 3) throw new IllegalArgumentException("bad vision command");
                 // Independent low power regardless of the selected manual tuning.
