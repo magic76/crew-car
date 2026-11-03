@@ -218,7 +218,9 @@ public final class CarControl {
     public boolean aiDriveSessionActive() {
         return aiDriveSessionActive && aiHoldActive() && !manual;
     }
-    public long aiDriveSessionId() { return aiDriveSessionActive() ? aiDriveSessionId : 0; }
+    public long aiDriveSessionId() {
+        return aiDriveSessionActive || aiDriveSessionPending ? aiDriveSessionId : 0;
+    }
     public int aiDriveSpeedGain() { return aiDriveSessionActive() ? aiDriveSpeedGain : 0; }
     public long aiDriveLastControlAgeMs() {
         return !aiDriveSessionActive() ? -1 :
@@ -526,12 +528,16 @@ public final class CarControl {
         final long queuedAt = SystemClock.elapsedRealtime();
         final long sessionId = ++aiDriveSessionSequence;
         aiDriveSessionPending = true;
+        aiDriveSessionId = sessionId; // expose the queued id so Gemini can echo it
         io.execute(() -> {
             long now = SystemClock.elapsedRealtime();
             if (epoch != motionEpoch.get() || !aiDriveSessionPending ||
                     !armed || manual || visionFollowActive || aiHoldActive ||
                     !"stop".equals(active) || now - queuedAt > 500) {
-                if (epoch == motionEpoch.get()) aiDriveSessionPending = false;
+                if (epoch == motionEpoch.get()) {
+                    aiDriveSessionPending = false;
+                    aiDriveSessionId = 0;
+                }
                 log.i("AI_SESSION", "stale or competing session start discarded");
                 return;
             }
