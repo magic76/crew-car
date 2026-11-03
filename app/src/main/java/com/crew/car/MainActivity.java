@@ -158,7 +158,6 @@ public final class MainActivity extends Activity {
                     visionOverlay.selectedTarget() == null ||
                     SystemClock.elapsedRealtime() - visionOverlay.lastFrameAt() > 400)) {
                 control.stopVisionFollow("person lost or inference stale");
-                updateApproachButton();
                 log.i("FOLLOW", "target or image stale; STOP");
             }
             main.postDelayed(this, CrewVision.TARGET_INTERVAL_MS);
@@ -215,7 +214,6 @@ public final class MainActivity extends Activity {
                     PersonTracker.Box target = visionOverlay.selectedTarget();
                     if (target == null || visionOverlay.targetLost()) {
                         control.stopVisionFollow("vision target lost");
-                        updateApproachButton();
                         log.i("FOLLOW", "selected person lost; STOP");
                     } else {
                         VisionFollowPlanner.Step step = VisionFollowPlanner.decide(target);
@@ -223,7 +221,6 @@ public final class MainActivity extends Activity {
                             // One visual risk condition ends the entire session.
                             // Never resume on its own when the person appears smaller again.
                             control.stopVisionFollow(step.reason);
-                            updateApproachButton();
                             log.i("FOLLOW", step.reason + " — session cancelled; STOP");
                             return;
                         }
@@ -439,7 +436,6 @@ public final class MainActivity extends Activity {
         cameraFrame.addView(hevcPreview, new FrameLayout.LayoutParams(-1, -1));
         visionOverlay = new VisionOverlay(this, selected -> {
             if (control.visionFollowActive()) control.stopVisionFollow();
-            updateApproachButton();
             log.i("VISION", "person target selected manually; previous follow cancelled");
         });
         cameraFrame.addView(visionOverlay, new FrameLayout.LayoutParams(-1, -1));
@@ -1298,7 +1294,6 @@ public final class MainActivity extends Activity {
         visionMetrics.reset();
         // A restarted camera must not inherit detections from the old feed/session.
         if (control != null) control.stopVisionFollow();
-        updateApproachButton();
         if (visionEnabled) {
             crewVision.setEnabled(false);
             visionEnabled = false;
@@ -1359,7 +1354,6 @@ public final class MainActivity extends Activity {
 
     private void emergencyStopAndLock() {
         control.stopVisionFollow();
-        updateApproachButton();
         releaseManualInputs();
         if (drivePad != null) drivePad.setControlsAvailable(false);
         control.disarm();
@@ -1414,7 +1408,6 @@ public final class MainActivity extends Activity {
         if (visionOverlay != null) visionOverlay.setVisionEnabled(visionEnabled);
         crewVision.setEnabled(visionEnabled);
         updateVisionButton();
-        updateApproachButton();
         updateVisionDebugHud();
         log.i("VISION", visionEnabled ?
                 "offline person detection enabled; motor follow separately authorized" :
