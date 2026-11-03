@@ -222,7 +222,7 @@ The motor watchdog prioritizes STOP before steering re-center; the WL packet tra
 
 ## v0.1.27 — Local person-centering feedback experiment (WL Tech only)
 
-The new **對準人** control and Gemini's high-level `align_selected_person` request share one **on-device** visual-servo controller. It works only after the human enables 人物辨識, **taps the desired person's green box**, manually unlocks the car, and starts alignment. The detector does not perform face recognition or select/reacquire people automatically.
+The new **對準人** control and Gemini's high-level `align_selected_person` request share one **on-device** visual-servo controller. It works only after the human enables 人物辨識, **taps the desired person's green box**, manually unlocks the car, and starts alignment. The detector does not perform face recognition or select/reacquire people automatically. **Every new alignment session requires another human tap on the intended person's box**; an AI cannot silently restart a completed three-pulse session.
 
 A conventional steering RC car **cannot yaw while stationary**. Each alignment attempt therefore requires a **160ms low-gain forward + left/right steering nudge**, which WILL potentially move closer to the person. This is **not a stationary rotate, person following, safe proximity control, distance sensing or collision avoidance**. No forward-only driving is emitted by this controller.
 
