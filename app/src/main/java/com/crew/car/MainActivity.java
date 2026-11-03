@@ -59,8 +59,9 @@ public final class MainActivity extends Activity {
     private TextView visionDebugHud;
     private boolean visionDebugShown;
     private volatile long lastRenderedHevcAt;
-    private Button visionButton, lockButton;
+    private Button visionButton, alignButton, lockButton;
     private volatile boolean visionEnabled;
+    private final VisionAlignPlanner visionAlign = new VisionAlignPlanner();
     private long followLastLogAt;
     private Button quickTalkButton, interruptButton;
     private TextView aiDriveStatus;
@@ -68,8 +69,22 @@ public final class MainActivity extends Activity {
     private final Runnable aiDriveTicker = new Runnable() {
         @Override public void run() {
             if (!foreground) return;
+            if (visionAlign.active()) {
+                VisionAlignPlanner.Decision step = visionAlign.tick(
+                        SystemClock.elapsedRealtime(),
+                        visionAlignReady() && control.armed() && !control.manual() &&
+                                !control.aiHoldActive());
+                if (step.command == VisionAlignPlanner.Command.CANCEL) {
+                    control.emergencyStop(); // invalidate queued pulses as well
+                    log.i("ALIGN", step.reason + "; STOP");
+                    updateAlignButton();
+                }
+            }
             if (aiDriveStatus != null) {
-                if (control.visionFollowActive())
+                if (visionAlign.active())
+                    aiDriveStatus.setText("對準人物 " + visionAlign.pulses() +
+                            "/3｜短動作後重新觀察");
+                else if (control.visionFollowActive())
                     aiDriveStatus.setText("跟隨人物中 · 最多 8 秒 · 可按急停");
                 else if (control.aiHoldActive())
                     aiDriveStatus.setText("AI 保持中：油門 " +
@@ -210,7 +225,37 @@ public final class MainActivity extends Activity {
                         currentCameraAdapter == 1);
                 visionMetrics.observe(frameAt, SystemClock.elapsedRealtime(), inferMs,
                         people.size(), visionOverlay.selectedTarget());
-                if (control.visionFollowActive()) {
+                if (visionAlign.active()) {
+                    if (!visionAlignReady() || !control.armed() || control.manual()) {
+                        stopVisionAlignment("人像或鏡頭失效");
+                    } else {
+                        VisionAlignPlanner.Decision decision = visionAlign.observe(
+                                visionOverlay.selectedTarget(), frameAt,
+                                SystemClock.elapsedRealtime(),
+                                "stop".equals(control.activeCommand()) &&
+                                        !control.visionFollowActive(),
+                                control.visionAlignPulseAcceptedAt(),
+                                control.visionAlignPulseStoppedAt(),
+                                control.lastStopReason());
+                        if (decision.command == VisionAlignPlanner.Command.LEFT ||
+                                decision.command == VisionAlignPlanner.Command.RIGHT) {
+                            int direction = decision.command == VisionAlignPlanner.Command.LEFT ? -1 : 1;
+                            String result = control.driveVisionAlignPulse(direction, frameAt);
+                            log.i("ALIGN", "feedback direction=" + direction +
+                                    " step=" + visionAlign.pulses() + " result=" + result);
+                            if (result.startsWith("blocked"))
+                                stopVisionAlignment(result);
+                        } else if (decision.command == VisionAlignPlanner.Command.CANCEL ||
+                                decision.command == VisionAlignPlanner.Command.ALIGNED) {
+                            // The planner already ended its session; STOP also invalidates
+                            // a pending motor job that has not reached the I/O executor.
+                            control.emergencyStop();
+                            log.i("ALIGN", decision.reason + "; STOP");
+                            updateAlignButton();
+                        }
+                    }
+                }
+                if (control.visionFollowActive() && !visionAlign.active()) {
                     PersonTracker.Box target = visionOverlay.selectedTarget();
                     if (target == null || visionOverlay.targetLost()) {
                         control.stopVisionFollow("vision target lost");
@@ -238,6 +283,7 @@ public final class MainActivity extends Activity {
                             " inferMs=" + inferMs + " (display only)");
             }
             @Override public void onError(String message) {
+                stopVisionAlignment("人物辨識故障");
                 control.stopVisionFollow("vision detector failure");
                 visionEnabled = false;
                 if (visionOverlay != null) visionOverlay.setVisionEnabled(false);
@@ -388,6 +434,19 @@ public final class MainActivity extends Activity {
         visionButton = button("辨識", v -> toggleVision());
         visionButton.setTextSize(12);
         topRow.addView(visionButton, new LinearLayout.LayoutParams(dp(64), dp(38)));
+        alignButton = button("對準人", v -> {
+            if (visionAlign.active()) {
+                stopVisionAlignment("使用者取消");
+            } else {
+                String result = startVisionAlignment();
+                if (result.startsWith("blocked"))
+                    android.widget.Toast.makeText(this, result,
+                            android.widget.Toast.LENGTH_LONG).show();
+            }
+        });
+        alignButton.setTextSize(12);
+        alignButton.setContentDescription("對準已點選人物，最多三次160毫秒前進加轉向；非避障，可再次按下取消");
+        topRow.addView(alignButton, new LinearLayout.LayoutParams(dp(70), dp(38)));
         Button controlLayoutButton = button("操控", v -> openControlLayoutDialog());
         topRow.addView(controlLayoutButton, new LinearLayout.LayoutParams(dp(60), dp(38)));
         lockButton = button("🔒 已上鎖", v -> toggleDriveLock());
@@ -435,6 +494,7 @@ public final class MainActivity extends Activity {
         hevcPreview = new TextureView(this);
         cameraFrame.addView(hevcPreview, new FrameLayout.LayoutParams(-1, -1));
         visionOverlay = new VisionOverlay(this, selected -> {
+            stopVisionAlignment("人物選擇已變更");
             if (control.visionFollowActive()) control.stopVisionFollow();
             log.i("VISION", "person target selected manually; previous follow cancelled");
         });
@@ -524,6 +584,7 @@ public final class MainActivity extends Activity {
                 log.e("SAFETY", "dual-stick input blocked: locked");
                 return;
             }
+            if (visionAlign.active()) stopVisionAlignment("手動搖桿接管");
             control.setManual(true);
             String result = control.driveManualAxes(steer, throttle);
             if (result.startsWith("blocked")) log.e("SAFETY", result);
@@ -1294,6 +1355,7 @@ public final class MainActivity extends Activity {
         lastRenderedHevcAt = 0;
         visionMetrics.reset();
         // A restarted camera must not inherit detections from the old feed/session.
+        stopVisionAlignment("相機串流停止");
         if (control != null) control.stopVisionFollow();
         if (visionEnabled) {
             crewVision.setEnabled(false);
@@ -1354,6 +1416,7 @@ public final class MainActivity extends Activity {
     }
 
     private void emergencyStopAndLock() {
+        stopVisionAlignment("使用者急停");
         control.stopVisionFollow();
         releaseManualInputs();
         if (drivePad != null) drivePad.setControlsAvailable(false);
@@ -1367,6 +1430,53 @@ public final class MainActivity extends Activity {
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         updateLockButton();
         log.i("SAFETY", "USER E-STOP: disarmed, manual re-arm required");
+    }
+
+    /**
+     * Local person-centering experiment. It can creep FORWARD during 160ms
+     * steering pulses; camera-only vision is never obstacle/distance clearance.
+     * Explicit user button or Gemini high-level request plus manual arm required.
+     */
+    private boolean visionAlignReady() {
+        long age = visionCameraAgeMs();
+        return foreground && drivingMode && activeProfile == CarProfile.WL_TECH &&
+                visionEnabled && crewVision != null && crewVision.ready() &&
+                cameraRunning && visionOverlay != null &&
+                visionOverlay.selectedTarget() != null && !visionOverlay.targetLost() &&
+                age >= 0 && age <= 650 && routes.wifi() != null;
+    }
+
+    private String startVisionAlignment() {
+        if (visionAlign.active()) return "blocked: alignment already running";
+        if (!visionAlignReady() || !control.armed() ||
+                control.owner() != MotorAuthorityPolicy.Owner.IDLE ||
+                !"stop".equals(control.activeCommand()))
+            return "blocked: 請先開啟辨識、點選人物並解鎖；車輛須處於靜止，鏡頭須正常";
+        long now = SystemClock.elapsedRealtime();
+        long frame = visionOverlay.lastFrameAt();
+        if (frame <= 0 || now - frame > 300 ||
+                visionOverlay.selectedTarget().score < .67f)
+            return "blocked: 請先點選近期畫面中的清楚人物";
+        visionAlign.start(now, frame);
+        runOnUiThread(this::updateAlignButton);
+        log.i("ALIGN", "session began; selected person only, max 3 x 160ms forward-steer pulses; no depth");
+        return "started: supervised 3-pulse person centering (may creep forward; no obstacle clearance)";
+    }
+
+    private void stopVisionAlignment(String reason) {
+        if (!visionAlign.active()) return;
+        visionAlign.cancel(reason);
+        if (control != null) control.emergencyStop(); // also invalidates pending motor work
+        log.i("ALIGN", "cancelled=" + reason + "; STOP");
+        runOnUiThread(this::updateAlignButton);
+    }
+
+    private void updateAlignButton() {
+        if (alignButton == null) return;
+        alignButton.setText(visionAlign.active() ? "取消對準" : "對準人");
+        alignButton.setContentDescription(visionAlign.active() ?
+                "取消人像方向校正並停止馬達" :
+                "對準已選人物，最多三次160毫秒短暫前進加轉向，不會避障");
     }
 
     /** Local rendered-image / screen-capture recency; not sensor exposure latency. */
@@ -1390,7 +1500,9 @@ public final class MainActivity extends Activity {
                 visionMetrics.people(), target == null ? 0f : target.score * 100f,
                 target == null ? 0f : target.centerX() - .5f, control.owner());
         String stop = control.lastStopReason();
-        visionDebugHud.setText(info + "\n停止原因：" + stop +
+        visionDebugHud.setText(info + "\n對準：" + visionAlign.status() +
+                "（" + visionAlign.pulses() + "/3，非避障）" +
+                "\n停止原因：" + stop +
                 " | STOP 本地送出 " + control.lastStopLocalDelayMs() +
                 "ms（無車端 ACK）");
     }
@@ -1403,6 +1515,7 @@ public final class MainActivity extends Activity {
     }
 
     private void toggleVision() {
+        stopVisionAlignment("人物辨識切換");
         control.stopVisionFollow();
         visionEnabled = !visionEnabled;
         visionMetrics.reset();
@@ -1519,11 +1632,18 @@ public final class MainActivity extends Activity {
                 runOnUiThread(() -> updateTalkButtons());
             }
             @Override public String onDriveIntent(String intent) {
+                if (visionAlign.active())
+                    return "blocked: local person alignment owns session; use stop_car first";
                 if (!foreground || !drivingMode || !gemini.ready() ||
                         activeProfile != CarProfile.WL_TECH || routes.wifi() == null ||
                         !control.armed())
                     return "blocked: Gemini/WL Wi-Fi/foreground and manual unlock required";
                 return control.driveIntent(intent);
+            }
+            @Override public String onAlignSelectedPerson() {
+                if (!gemini.ready())
+                    return "blocked: Gemini Live disconnected";
+                return startVisionAlignment();
             }
             @Override public String onSteer(String direction, int holdMs) {
                 if (!control.armed()) return "blocked: manual safety lock";
@@ -1544,10 +1664,12 @@ public final class MainActivity extends Activity {
                 return control.holdAiAxes(steering, throttle, leaseMs);
             }
             @Override public void onStop() {
+                stopVisionAlignment("Gemini stop_car");
                 control.emergencyStop();
                 log.i("SAFETY", "AI stop_car requested (hardware acknowledgement unavailable)");
             }
             @Override public void onLock() {
+                stopVisionAlignment("Gemini lock_car");
                 control.disarm();
                 runOnUiThread(() -> { if (arm != null) uncheck(); });
                 log.i("SAFETY", "AI lock_car requested; manual re-arm required");
@@ -1564,6 +1686,11 @@ public final class MainActivity extends Activity {
                         "voice_drive_intent_requires_manual_arm", true,
                         "voice_drive_intent_distance_measured", false,
                         "voice_drive_intent_trajectory_correction_available", false,
+                        "person_align_feedback_available", true,
+                        "person_align_active", visionAlign.active(),
+                        "person_align_pulses", visionAlign.pulses(),
+                        "person_align_status", visionAlign.status(),
+                        "person_align_obstacle_avoidance", false,
                         "voice_drive_intent_long_cruise_available", false,
                         "voice_drive_intent_obstacle_avoidance_available", false,
                         "last_stop_reason", control.lastStopReason(),
@@ -1624,6 +1751,8 @@ public final class MainActivity extends Activity {
                                 activeProfile == CarProfile.WL_TECH,
                         "vision_follow_active", control.visionFollowActive(),
                         "vision_follow_available_in_ui", false,
+                        "person_align_available_in_ui", true,
+                        "person_align_active", visionAlign.active(),
                         "vision_can_control_motors", control.visionFollowActive(),
                         "vision_inference_fps", (double) visionMetrics.fps(),
                         "vision_inference_ms", visionMetrics.inferenceMs(),
@@ -1723,6 +1852,7 @@ public final class MainActivity extends Activity {
         main.removeCallbacks(cameraMonitor);
         main.removeCallbacks(aiDriveTicker);
         main.removeCallbacks(visionSampler);
+        stopVisionAlignment("App 切換背景");
         if (control != null) control.stopVisionFollow("app background");
         visionMetrics.reset();
         if (crewVision != null) crewVision.setEnabled(false);
@@ -1753,6 +1883,7 @@ public final class MainActivity extends Activity {
         main.post(visionSampler);
         updateTalkButtons();
         updateVisionButton();
+        updateAlignButton();
         updateLockButton();
     }
 
@@ -1761,6 +1892,7 @@ public final class MainActivity extends Activity {
         main.removeCallbacks(aiDriveTicker);
         main.removeCallbacks(visionSampler);
         main.removeCallbacks(saveGeminiKeyLater);
+        stopVisionAlignment("App 結束");
         stopCameraReceiver();
         liveConnectToken++;
         routes.releaseCellularForLive();
