@@ -19,11 +19,13 @@ public final class CarToolPolicy {
                 "lock_car".equals(name) || "get_car_status".equals(name) ||
                 "get_camera_status".equals(name) || "get_network_status".equals(name) ||
                 "set_drive_state".equals(name) || "steer_car".equals(name) ||
-                "approach_target".equals(name);
+                "drive_intent".equals(name);
     }
 
-    public static String validateApproach(String bearing, int durationMs) {
-        return TargetApproachPolicy.validate(bearing, durationMs);
+    /** The model never supplies movement time; the on-device plan is deterministic. */
+    public static String validateDriveIntent(String intent) {
+        return DriveIntentPolicy.plan(intent) == null ?
+                "blocked: unsupported voice intent" : null;
     }
 
     public static String validateHold(String steering, String throttle, int leaseMs) {
