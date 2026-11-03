@@ -32,6 +32,16 @@ public final class DriveIntentPolicy {
 
     private DriveIntentPolicy() {}
 
+    /**
+     * Pure scheduler decision, checked before any steering re-center or motor TX.
+     * Returning true means send neutral on BOTH axes, never a straight tail.
+     */
+    static boolean mustStopBothAxes(long now, long deadline, long steeringReleaseAt,
+                                    boolean stopWithSteering) {
+        return now >= deadline ||
+                (stopWithSteering && steeringReleaseAt > 0 && now >= steeringReleaseAt);
+    }
+
     /** Null rejects unsupported or continuous blind motion. */
     public static Plan plan(String intent) {
         if (intent == null) return null;
