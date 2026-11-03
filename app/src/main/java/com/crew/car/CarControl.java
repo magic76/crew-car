@@ -221,7 +221,11 @@ public final class CarControl {
     public long aiDriveSessionId() {
         return aiDriveSessionActive || aiDriveSessionPending ? aiDriveSessionId : 0;
     }
-    public int aiDriveSpeedGain() { return aiDriveSessionActive() ? aiDriveSpeedGain : 0; }
+    /** Actual requested packet gain after the user's manual tuning ceiling. */
+    public int aiDriveSpeedGain() {
+        return aiDriveSessionActive() ?
+                Math.min(aiDriveSpeedGain, config.tuning.throttlePercent) : 0;
+    }
     public long aiDriveLastControlAgeMs() {
         return !aiDriveSessionActive() ? -1 :
                 Math.max(0L, SystemClock.elapsedRealtime() - aiDriveSessionLastControlAt);
