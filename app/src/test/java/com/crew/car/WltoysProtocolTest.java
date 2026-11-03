@@ -25,6 +25,22 @@ public final class WltoysProtocolTest {
     @Test(expected = IllegalArgumentException.class)
     public void rejectsOutOfBoundsByte() { WltoysProtocol.packet(256, 128, 128); }
 
+    @Test public void goalDirectionNudgesUseCombinedForwardAndSteeringPayload() {
+        CarTuning gentle = new CarTuning(50, 50, 50);
+        byte[] leftForward = WltoysProtocol.control(-1, 1, gentle);
+        byte[] straight = WltoysProtocol.control(0, 1, gentle);
+        byte[] rightForward = WltoysProtocol.control(1, 1, gentle);
+        assertEquals(128 - Math.round(45f * .5f), leftForward[9] & 255);
+        assertEquals(128, straight[9] & 255);
+        assertEquals(128 + Math.round(45f * .5f), rightForward[9] & 255);
+        for (byte[] packet : new byte[][]{leftForward,straight,rightForward}) {
+            assertEquals(128 + Math.round(30f * .5f), packet[10] & 255);
+            assertEquals(16, packet.length);
+            assertEquals((packet[9] ^ packet[10] ^ packet[11]) & 255,
+                    packet[14] & 255);
+        }
+    }
+
     @Test public void videoHandshakeSequences() {
         assertEquals(16, CommandCodec.encode(WltoysProtocol.CAMERA_START_HEX, true).length);
         assertEquals(14, CommandCodec.encode(WltoysProtocol.CAMERA_STOP_HEX, true).length);
