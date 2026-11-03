@@ -5,12 +5,15 @@ import static org.junit.Assert.*;
 
 public final class CarToolPolicyTest {
     @Test public void knownTools() {
-        for (String name : new String[]{"drive_car","stop_car","lock_car",
-                "get_car_status","get_camera_status","get_network_status","drive_intent"}) {
+        for (String name : new String[]{"drive_intent","stop_car","lock_car",
+                "get_car_status","get_camera_status","get_network_status"}) {
             assertTrue(name, CarToolPolicy.isSupported(name));
         }
         assertFalse(CarToolPolicy.isSupported("unlock_car"));
         assertFalse(CarToolPolicy.isSupported("drive_sequence"));
+        assertFalse(CarToolPolicy.isSupported("drive_car"));
+        assertFalse(CarToolPolicy.isSupported("set_drive_state"));
+        assertFalse(CarToolPolicy.isSupported("steer_car"));
         assertFalse(CarToolPolicy.isSupported(""));
     }
 
