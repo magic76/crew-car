@@ -22,7 +22,7 @@ public final class CarToolPolicyTest {
     @Test public void oneSemanticToolReplacesOldDirectionAuthorization() {
         assertNull(CarToolPolicy.validateDriveIntent("forward"));
         assertNull(CarToolPolicy.validateDriveIntent("forward_small"));
-        assertNotNull("continuous motion needs verified feedback", CarToolPolicy.validateDriveIntent("forward_continuous"));
+        assertNull("bounded supervised cruise is allowed", CarToolPolicy.validateDriveIntent("forward_continuous"));
         assertNull(CarToolPolicy.validateDriveIntent("front_left"));
         assertNull(CarToolPolicy.validateDriveIntent("front_right"));
         assertNull(CarToolPolicy.validateDriveIntent("backward"));
