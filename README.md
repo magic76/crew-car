@@ -9,7 +9,7 @@ Android app prototype for a **WL Tech FPV CAR** Wi-Fi FPV toy car with **Gemini 
 - Phone UI: car Wi-Fi/network diagnostics, HTTP JPEG/MJPEG preview adapter, manual directional buttons with simultaneous two-axis/diagonal input and STOP on full release, configuration, local Logcat and shareable diagnostic text.
 - Wi-Fi socket binding: car camera and control use the Wi-Fi network; Gemini Live uses a separate **validated cellular/other internet** network. It does not bind the entire Android process to the car's (typically offline) Wi-Fi.
 - Gemini Live model ID: `gemini-3.8-live`; BYOK API Key entered per session only, never committed, saved to preferences, or logged. Raw WebSocket, 16 kHz PCM microphone, 24 kHz PCM speaker, camera frames compressed to <=1 fps, tool/function calling.
-- AI `drive_car(direction, duration_ms)`: explicit human arming required, fresh camera frame required (within 2.5 seconds), max 650 ms pulse; STOP on release, movement timeout, errors, tool-call cancellation, and activity pause.
+- AI `drive_intent(intent)`: explicit human arming and Live/Wi-Fi required; model chooses a fixed semantic direction, local app bounds it to 500–900ms and automatically sends STOP. Continuous blind voice cruise is disabled; no camera-based obstacle clearance is claimed.
 - Configurable Wi-Fi control adapter: UDP or TCP, payload bytes in HEX or UTF-8. Custom mode requires all five direction/STOP payloads; the built-in WL FPV profile uses the OEM-derived UDP destination and 16-byte frame.
 - **TX != success**: no verified ACK / telemetry from this toy, so logs and Gemini explicitly report a queued/unacknowledged packet rather than successful physical movement.
 
@@ -51,9 +51,9 @@ The camera stream and Gemini 3.8 Live network/API integration have not been veri
 
 ## Gemini Live car tools
 
-Live declares six real Android-side functions: `drive_car`, `stop_car`, `lock_car`, `get_car_status`, `get_camera_status`, and `get_network_status`.
+Live declares six Android-side functions: `drive_intent`, `stop_car`, `lock_car`, `get_car_status`, `get_camera_status`, and `get_network_status`.
 
-Status and connection tools report **app-level observations only**, not physical car telemetry. AI motor commands are validated (100–650 ms), blocked without manual arming / fresh image / car Wi-Fi, guarded against duplicate tool IDs and invalidated after E-STOP. A batch containing STOP or lock blocks any motor move in the same batch. Only the human can unlock the car through the UI.
+Status and connection tools report **app-level observations only**, not physical car telemetry. Voice motion uses locally bounded semantic leases and is blocked without manual arming, foreground Live and car Wi-Fi. Camera freshness is not collision clearance. Duplicate tool IDs and E-STOP are guarded; a batch containing STOP or lock blocks any motor move. Only the human can unlock through the UI.
 
 A read-only tool smoke-test button has been added. Without the car, connect Live over cellular or normal validated Wi-Fi, and test status/camera/network tools while locked. See [docs/GEMINI_TOOLS.md](docs/GEMINI_TOOLS.md).
 
@@ -213,3 +213,9 @@ A normal 「往前進」 is now a **local 2.5-second forward drive**, not a 0.5-
 **Removed the extra 導向 button, 20-second authorization window and 3-pulse quota.** After the normal manual unlock, spoken directions work without another confirmation screen. Blurry FPV no longer gates a clear human-specified voice direction, but also does **not** provide distance or obstacle avoidance. STOP, manual priority, app foreground, Gemini/Wi-Fi connection checks and local finite watchdog **remain**. The old image-follow internals are retained but not exposed as a voice driving mode.
 
 See [Natural Voice Drive QA](docs/NATURAL_VOICE_DRIVE_QA.md). App version 0.1.26 / code 27.
+
+## Voice motion safety update — after v0.1.26
+
+The original v0.1.26 section above is historical. The active `drive_intent` behavior now limits `forward` and `backward` to **900ms**, `*_small` to **500ms**, and `front_left/front_right` to **600ms**. A diagonal ends steering **and throttle together**, without a straight-driving tail. `forward_continuous` is rejected until a tested, supervised feedback mechanism exists.
+
+The motor watchdog prioritizes STOP before steering re-center; the WL packet transmitter also checks the lease deadline before sending motor packets. Logs now include the selected semantic intent. This **is not obstacle detection or trajectory correction**: a camera-only view has no verified stopping distance, and UDP STOP has no car ACK. Test wheels-up, then only in clear space under human supervision; do not drive toward walls or obstacles. See [Natural Voice Drive QA](docs/NATURAL_VOICE_DRIVE_QA.md).
