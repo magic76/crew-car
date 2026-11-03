@@ -3,11 +3,13 @@ package com.crew.car;
 /**
  * One spoken command -> a conservative on-device motor lease.
  * No depth/odometry/obstacle clearance is measured; this is NOT navigation.
- * Voice-only long cruise is disabled until verified feedback control exists.
+ * Voice 'continuous' means one short, video-fresh lease, never unlimited travel.
  */
 public final class DriveIntentPolicy {
     public static final int NUDGE_MS = 500;
     public static final int FORWARD_MS = 900;
+    /** Explicit continuous speech gets one capped 2-second lease, NOT auto-renewal. */
+    public static final int SUPERVISED_CRUISE_MS = 2000;
     public static final int REVERSE_MS = 900;
     public static final int FRONT_DIAGONAL_MS = 600;
     public static final int TURN_RECENTER_MS = 650;
@@ -42,7 +44,7 @@ public final class DriveIntentPolicy {
                 (stopWithSteering && steeringReleaseAt > 0 && now >= steeringReleaseAt);
     }
 
-    /** Null rejects unsupported or continuous blind motion. */
+    /** Null rejects unsupported or indefinite motion. */
     public static Plan plan(String intent) {
         if (intent == null) return null;
         switch (intent) {
@@ -50,6 +52,8 @@ public final class DriveIntentPolicy {
                 return new Plan(intent, "center", "forward", NUDGE_MS, false);
             case "forward":
                 return new Plan(intent, "center", "forward", FORWARD_MS, false);
+            case "forward_continuous":
+                return new Plan(intent, "center", "forward", SUPERVISED_CRUISE_MS, false);
             case "backward_small":
                 return new Plan(intent, "center", "reverse", NUDGE_MS, false);
             case "backward":
