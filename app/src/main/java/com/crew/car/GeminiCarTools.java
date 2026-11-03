@@ -30,6 +30,7 @@ public final class GeminiCarTools {
                 "forward_small = '前進一點/稍微往前' (0.5s); " +
                 "forward = '往前進/向前開/前進' (2.5s, NOT a tiny tap); " +
                 "forward_continuous = '一直前進/持續往前/往前開不要停' (bounded 15s local lease). " +
+                "backward_small = '後退一點' (0.5s), backward = '倒車/往後退' (2s); " +
                 "front_left/front_right = '往左前方/往右前方' (2s forward plus steering " +
                 "automatically centered within 650ms). Add _small only if user said '一點'. " +
                 "Never select forward_small for plain '前進'. " +
@@ -42,6 +43,8 @@ public final class GeminiCarTools {
                                         .put("forward_small")
                                         .put("forward")
                                         .put("forward_continuous")
+                                        .put("backward_small")
+                                        .put("backward")
                                         .put("front_left_small")
                                         .put("front_right_small")
                                         .put("front_left")
