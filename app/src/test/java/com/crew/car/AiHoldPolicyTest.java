@@ -29,8 +29,11 @@ public final class AiHoldPolicyTest {
         assertNotNull(CarToolPolicy.validateHold("left", null, 2000));
         assertNotNull(CarToolPolicy.validateHold("diagonal", "forward", 2000));
         assertNotNull(CarToolPolicy.validateHold("right", "accelerate", 2000));
-        assertTrue(CarToolPolicy.isSupported("set_drive_state"));
-        assertTrue(CarToolPolicy.isSupported("steer_car"));
+        // Internal motor lease helpers stay testable, but Gemini now advertises
+        // only drive_intent; stale model calls to old movement tools are blocked.
+        assertFalse(CarToolPolicy.isSupported("set_drive_state"));
+        assertFalse(CarToolPolicy.isSupported("steer_car"));
+        assertTrue(CarToolPolicy.isSupported("drive_intent"));
         assertNull(CarToolPolicy.validateSteer("left", 100));
         assertNull(CarToolPolicy.validateSteer("right", 550));
         assertNull(CarToolPolicy.validateSteer("center", 2000));
