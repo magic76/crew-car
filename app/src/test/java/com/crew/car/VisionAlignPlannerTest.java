@@ -58,6 +58,18 @@ public class VisionAlignPlannerTest {
                         "vision align pulse lease expired").command);
     }
 
+    @Test public void stopMismatchAndTargetSwitchFailClosed() {
+        VisionAlignPlanner p = new VisionAlignPlanner();
+        p.start(1000, 999);
+        assertEquals(VisionAlignPlanner.Command.LEFT,
+                p.observe(box(.37f, .14f), 1030, 1040, true, 0, 0, "").command);
+        assertEquals(VisionAlignPlanner.Command.CANCEL,
+                p.observe(box(.42f, .14f), 1520, 1530, true, 1060, 1200,
+                        "E-STOP").command);
+        p.start(2000, 1999);
+        assertEquals(VisionAlignPlanner.Command.CANCEL, p.tick(2050, false).command);
+    }
+
     @Test public void neverChainMoreThanThreePulsesAndRejectOtherMotorOwner() {
         VisionAlignPlanner p = new VisionAlignPlanner();
         p.start(1000,999);
