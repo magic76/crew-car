@@ -570,6 +570,8 @@ public final class MainActivity extends Activity {
         settingsShell.setVisibility(View.GONE);
         // This single view owns BOTH touch pointers; no two-button multi-touch conflicts.
         drivePad = new DualStickDriveView(this, (steer, throttle) -> {
+            // Any physical joystick interaction, including release, revokes alignment.
+            if (visionAlign.active()) stopVisionAlignment("手動搖桿優先");
             heldSteer = steer;
             heldThrottle = throttle;
             main.removeCallbacks(manualPulse);
@@ -584,7 +586,6 @@ public final class MainActivity extends Activity {
                 log.e("SAFETY", "dual-stick input blocked: locked");
                 return;
             }
-            if (visionAlign.active()) stopVisionAlignment("手動搖桿接管");
             control.setManual(true);
             String result = control.driveManualAxes(steer, throttle);
             if (result.startsWith("blocked")) log.e("SAFETY", result);
@@ -1551,6 +1552,7 @@ public final class MainActivity extends Activity {
     }
 
     private void interruptAssistant() {
+        stopVisionAlignment("使用者打斷 AI");
         control.emergencyStop(); // user interrupt also terminates an active AI cruise lease
         gemini.interruptSpeech();
         updateTalkButtons();
@@ -1611,6 +1613,7 @@ public final class MainActivity extends Activity {
         gemini.connect(apiKey, route, new GeminiLive.Listener() {
             @Override public void onStatus(String status) {
                 if (status.contains("失敗") || status.contains("中斷")) {
+                    stopVisionAlignment("Gemini Live 連線中斷");
                     control.emergencyStop();
                     main.post(routes::releaseCellularForLive);
                 }
