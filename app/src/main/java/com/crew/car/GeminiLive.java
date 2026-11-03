@@ -40,6 +40,9 @@ public final class GeminiLive {
         void onStatus(String value);
         String onDrive(String direction, int milliseconds);
         String onDriveIntent(String intent);
+        String onStartAiDriveSession();
+        String onAdjustAiDriveSession(long sessionId, String steering, String speed);
+        long currentAiDriveSessionId();
         String onGuideTowardPerson(String bearing);
         String onAlignSelectedPerson();
         String onDriveState(String steering, String throttle, int leaseMs);
@@ -234,15 +237,20 @@ public final class GeminiLive {
 
     private JSONObject setup() {
         try {
-            String instruction = "你是 Crew Car 的繁體中文語音遙控助手。只依照明確的人類指令選擇 drive_intent，" +
+            String instruction = "你是 Crew Car 的繁體中文語音遙控助手。單次短移動才使用 drive_intent。" +
                     "每次最多一次；所有馬達時間由 Android 本地控制，不能自行連續下達指令。" +
                     "「前進一點」選 forward_small（0.5秒），普通「往前進／前進」選 forward（0.9秒），兩者不同。" +
                     "「後退一點」選 backward_small（0.5秒），「倒車」選 backward（0.9秒）。" +
                     "「左前方／右前方」選 front_left/front_right（0.6秒），轉向和油門會一起停止，" +
                     "沒有轉向完畢後繼續直行的尾段；加「一點」才選 _small（0.5秒）。" +
-                    "使用者明確說「持續前進／一直前進」才選 forward_continuous，" +
-                    "Android 最多持續 2 秒且要求影像排入傳送保持新鮮；到期自動停，不會自動重啟。" +
-                    "如果要求一直開到抵達、無限前進或自動巡航，說明尚未支援，不可連鎖工具。" +
+                    "使用者明確說「持續前進／一邊前進一邊轉彎／開始 AI 駕駛」請呼叫 start_ai_drive_session。" +
+                    "它在 Android 上持續送低速前進油門，最多30秒，直至急停、影像/Live中斷、控制更新超過8.5秒或期限到。" +
+                    "開始時工具會回 session_id，行駛中以 adjust_ai_drive_session 搭配該 id 修改方向與速度。" +
+                    "方向 left/right 每次只修正900毫秒，然後方向回正，油門不會中斷；" +
+                    "速度 slow/normal/fast 分別是原廠增益的50/65/80%，並非量測的 km/h。" +
+                    "Android 會定期要求你重新觀察 FPV，若畫面清楚且前方空曠才回覆方向/速度更新。" +
+                    "若不明確、辨識不到人物、畫面顯示障礙物或無法確認安全，必須呼叫 stop_car，不可猜。" +
+                    "不得自行再 start 下一段 session、不得延長截止時間、不得盲目連續加速。" +
                     "鏡頭沒有可靠距離或障礙物感測，車輛沒有可驗證的安全距離、避障、車端ACK，" +
                     "即使影像新鮮也不能保證安全；靠近牆壁或障礙物時請停止移動。" +
                     "仍須人類在 App 解鎖與現場監督，使用者說停立刻 stop_car、說鎖車立刻 lock_car。" +
@@ -250,7 +258,8 @@ public final class GeminiLive {
                     "若不確定方向先詢問；不自行猜測位置、距離、目標是否抵達。" +
                     "使用者說「朝著那個人走／往前面的人方向走」，優先使用 guide_toward_person：" +
                     "依你真正可見的近期車頭 FPV 畫面判斷單一人物在左、中、右。" +
-                    "這個工具不依賴 Android MediaPipe 人框，不用人先點框，但只能移動一次0.5秒。" +
+                    "這個一次移動工具不依賴 Android MediaPipe 人框，不用人先點框，但只能移動一次0.5秒；" +
+                    "若已在 AI Drive Session 中，改用 adjust_ai_drive_session，不得重新起動一個短移動。" +
                     "若看不到、畫面不明、多個人物、不確定，請回報 bearing=unknown 或問人類，不能憑空猜。" +
                     "不可自行重複呼叫或宣稱跟隨中，下一次動作需要新的使用者明確要求。" +
                     "使用者說「對準已點選人物」，才使用 align_selected_person，需要人類先點框。" +
@@ -427,6 +436,8 @@ public final class GeminiLive {
                         if (safetyOverride && ("drive_car".equals(name) ||
                                 "set_drive_state".equals(name) || "steer_car".equals(name) ||
                                 "drive_intent".equals(name) ||
+                                "start_ai_drive_session".equals(name) ||
+                                "adjust_ai_drive_session".equals(name) ||
                                 "guide_toward_person".equals(name) ||
                                 "align_selected_person".equals(name))) {
                             result = toolStatus("blocked", "STOP/lock in same tool batch takes priority");
@@ -452,6 +463,12 @@ public final class GeminiLive {
                     String chosen = toolArgs == null ? "" : toolArgs.optString("intent", "");
                     intentSummary = " selectedIntent=" +
                             (DriveIntentPolicy.plan(chosen) == null ? "invalid" : chosen);
+                } else if ("adjust_ai_drive_session".equals(name)) {
+                    JSONObject toolArgs = call.optJSONObject("args");
+                    intentSummary = " driveSessionId=" +
+                            (toolArgs == null ? 0 : toolArgs.optLong("session_id", 0)) +
+                            " steering=" + (toolArgs == null ? "" : toolArgs.optString("steering", "")) +
+                            " speed=" + (toolArgs == null ? "" : toolArgs.optString("speed", ""));
                 } else if ("guide_toward_person".equals(name)) {
                     JSONObject toolArgs = call.optJSONObject("args");
                     String bearing = toolArgs == null ? "" : toolArgs.optString("bearing", "");
@@ -497,6 +514,36 @@ public final class GeminiLive {
                 return toolStatus(blocked ? "blocked" : "queued", result == null ? "no result" : result)
                         .put("device_acknowledged", false)
                         .put("motion_verified", false);
+            }
+            case "start_ai_drive_session": {
+                String result = listener.onStartAiDriveSession();
+                boolean blocked = result == null || result.startsWith("blocked");
+                return toolStatus(blocked ? "blocked" : "queued",
+                        result == null ? "no result" : result)
+                        .put("session_id", blocked ? 0 : listener.currentAiDriveSessionId())
+                        .put("max_session_ms", AiDriveSessionPolicy.MAX_SESSION_MS)
+                        .put("steering_preserves_throttle", true)
+                        .put("visual_review_required", true)
+                        .put("device_acknowledged", false)
+                        .put("obstacle_clearance_verified", false);
+            }
+            case "adjust_ai_drive_session": {
+                long sessionId = args == null ? 0 : args.optLong("session_id", 0);
+                String steering = args == null ? "" : args.optString("steering", "");
+                String speed = args == null ? "" : args.optString("speed", "");
+                if (!AiDriveSessionPolicy.validSteering(steering) ||
+                        !AiDriveSessionPolicy.validSpeed(speed))
+                    return toolStatus("blocked", "invalid steering or speed; no movement");
+                String result = listener.onAdjustAiDriveSession(sessionId, steering, speed);
+                boolean blocked = result == null || result.startsWith("blocked");
+                return toolStatus(blocked ? "blocked" : "queued",
+                        result == null ? "no result" : result)
+                        .put("session_id", sessionId)
+                        .put("session_extended", false)
+                        .put("throttle_kept_on_during_turn", !blocked)
+                        .put("steering_correction_ms", AiDriveSessionPolicy.STEERING_HOLD_MS)
+                        .put("no_measured_speed_or_distance", true)
+                        .put("device_acknowledged", false);
             }
             case "drive_intent": {
                 String intent = args == null ? "" : args.optString("intent", "");
