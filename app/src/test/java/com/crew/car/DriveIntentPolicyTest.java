@@ -29,6 +29,18 @@ public class DriveIntentPolicyTest {
             assertTrue("both axes must stop for " + intent, plan.stopWithSteering);
         }
     }
+    @Test public void schedulerStopsBothAxesAtLeaseOrSteeringExpiry() {
+        assertFalse(DriveIntentPolicy.mustStopBothAxes(599, 600, 650, true));
+        assertTrue("diagonal lease expiry must STOP before recenter",
+                DriveIntentPolicy.mustStopBothAxes(600, 600, 650, true));
+        assertTrue("future longer diagonal must STOP at steering expiry",
+                DriveIntentPolicy.mustStopBothAxes(650, 2000, 650, true));
+        assertFalse("normal steering-only correction retains its active throttle lease",
+                DriveIntentPolicy.mustStopBothAxes(650, 2000, 650, false));
+        assertTrue("forward throttle also stops at deadline",
+                DriveIntentPolicy.mustStopBothAxes(900, 900, 0, false));
+    }
+
     @Test public void preservesExplicitBackwardsSpeechWithoutLongBlindCruise() {
         assertEquals("reverse", DriveIntentPolicy.plan("backward").throttle);
         assertEquals(900, DriveIntentPolicy.plan("backward").leaseMs);
