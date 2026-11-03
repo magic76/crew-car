@@ -28,8 +28,14 @@ public class DriveIntentPolicyTest {
             assertTrue(plan.leaseMs <= CarToolPolicy.MAX_HOLD_MS);
         }
     }
-    @Test public void modelCannotInventReverseTimeOrInPlaceCircle() {
-        for (String intent : new String[]{null, "", "reverse", "backward",
+    @Test public void preservesExplicitBackwardsSpeechWithoutLongBlindCruise() {
+        assertEquals("reverse", DriveIntentPolicy.plan("backward").throttle);
+        assertEquals(2000, DriveIntentPolicy.plan("backward").leaseMs);
+        assertEquals(500, DriveIntentPolicy.plan("backward_small").leaseMs);
+        assertNull(DriveIntentPolicy.plan("backward_continuous"));
+    }
+    @Test public void modelCannotInventIndefiniteTimeOrInPlaceCircle() {
+        for (String intent : new String[]{null, "", "reverse", "backward_continuous",
                 "left", "right", "circle", "spin", "follow_person",
                 "forward_forever", "until_stop"}) {
             assertNull("must reject " + intent, DriveIntentPolicy.plan(intent));
