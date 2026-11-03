@@ -18,6 +18,19 @@ public enum CarProfile {
         if (index == 2) return KL_FPV;
         return WL_TECH;
     }
+    /** KL remains in storage/protocol code but is temporarily hidden in the UI. */
+    public static String[] visibleOptions() {
+        return new String[]{"自訂封包", "WL Tech FPV（現有）"};
+    }
+
+    /**
+     * Retain legacy persisted values without exposing KL in the selector.
+     * Stored KL (index 2), or an invalid value, safely opens as WL instead.
+     */
+    public static CarProfile visibleFromIndex(int savedIndex) {
+        return savedIndex == CUSTOM.spinnerIndex ? CUSTOM : WL_TECH;
+    }
+
     public String settingKey(String field) {
         if (field == null || !field.matches("[a-z_]+"))
             throw new IllegalArgumentException("invalid setting key");
