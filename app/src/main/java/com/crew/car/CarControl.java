@@ -655,12 +655,6 @@ public final class CarControl {
         lastStopLocalDelayMs = -1;
         visionFollowActive = false;
         visionFollowLimitAt = 0;
-        approachPulseActive = false;
-        approachPending = false;
-        if (!"target nudge elapsed".equals(reason)) {
-            approachPermitUntil = 0;
-            approachPulsesRemaining = 0;
-        }
         aiSteerReleaseAt = 0;
         aiHoldActive = false;
         aiSteer = 0;
@@ -688,6 +682,12 @@ public final class CarControl {
         long stopEpoch = motionEpoch.incrementAndGet(); // invalidate pending motor commands
         visionFollowActive = false;
         visionFollowLimitAt = 0;
+        approachPulseActive = false;
+        approachPending = false;
+        if (!"target nudge elapsed".equals(reason)) {
+            approachPermitUntil = 0;
+            approachPulsesRemaining = 0;
+        }
         aiSteerReleaseAt = 0;
         aiHoldActive = false;
         aiSteer = 0;
