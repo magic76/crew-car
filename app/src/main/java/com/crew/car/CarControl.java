@@ -36,6 +36,7 @@ public final class CarControl {
     private volatile String active = "stop";
     private volatile boolean aiHoldActive;
     private volatile boolean visionFollowActive;
+    private volatile boolean approachModeLatched;
     private volatile boolean approachPulseActive;
     private volatile boolean approachPending;
     private volatile long approachPermitUntil;
@@ -171,6 +172,8 @@ public final class CarControl {
     }
     public long lastStopSentAt() { return lastStopSentAt; }
     public long stopBurstAttempts() { return stopBurstAttempts; }
+    /** Remains latched after the three short nudges expire: old AI cruise cannot silently resume. */
+    public boolean approachModeLatched() { return approachModeLatched && armed; }
     public boolean approachAuthorized() {
         return armed && approachPermitUntil > SystemClock.elapsedRealtime() &&
                 approachPulsesRemaining > 0;
@@ -194,6 +197,7 @@ public final class CarControl {
                 emergencyStop();
             approachPermitUntil = 0;
             approachPulsesRemaining = 0;
+            approachModeLatched = false;
         }
         manual = value;
     }
@@ -240,6 +244,7 @@ public final class CarControl {
             throw new IllegalArgumentException("Cannot send WL commands to KL");
         motionEpoch.incrementAndGet();
         aiHoldActive = false;
+        approachModeLatched = false;
         approachPulseActive = false;
         approachPending = false;
         approachPermitUntil = 0;
@@ -291,6 +296,7 @@ public final class CarControl {
     }
 
     public void disarm() {
+        approachModeLatched = false;
         approachPulseActive = false;
         approachPending = false;
         approachPermitUntil = 0;
@@ -325,7 +331,7 @@ public final class CarControl {
             if ("stop".equals(direction)) { emergencyStop(); return "stopped"; }
             if (!armed) return "blocked: control locked";
             if (fromAi && manual) return "blocked: manual priority";
-            if (fromAi && (approachAuthorized() || approachPulseActive))
+            if (fromAi && approachModeLatched)
                 return "blocked: target direction mode requires approach_target only";
             if (fromAi && visionFollowActive) return "blocked: visual follow owns controls";
             if (fromAi && aiHoldActive)
@@ -363,7 +369,7 @@ public final class CarControl {
         if (!armed) return "blocked: control locked";
         if (manual) return "blocked: manual priority";
         if (visionFollowActive) return "blocked: visual follow owns controls";
-        if (approachAuthorized() || approachPulseActive)
+        if (approachModeLatched)
             return "blocked: target direction mode forbids cruise leases";
         if (!MotorAuthorityPolicy.canClaim(owner(), MotorAuthorityPolicy.Owner.GEMINI) &&
                 !MotorAuthorityPolicy.canUpdate(owner(), MotorAuthorityPolicy.Owner.GEMINI))
@@ -476,6 +482,7 @@ public final class CarControl {
         try { safe = approachSafetyGate.getAsBoolean(); }
         catch (Exception ignored) { safe = false; }
         if (!safe) return "blocked: Gemini/Wi-Fi/foreground gate unavailable";
+        approachModeLatched = true;
         approachPermitUntil = SystemClock.elapsedRealtime() +
                 TargetApproachPolicy.AUTHORIZATION_MS;
         approachPulsesRemaining = TargetApproachPolicy.MAX_PULSES;
@@ -485,6 +492,7 @@ public final class CarControl {
     }
 
     public synchronized void cancelApproachAssist() {
+        approachModeLatched = false;
         approachPermitUntil = 0;
         approachPulsesRemaining = 0;
         approachPending = false;
@@ -645,6 +653,7 @@ public final class CarControl {
     public void emergencyStop() { emergencyStop("E-STOP"); }
 
     private void emergencyStop(String reason) {
+        approachModeLatched = false;
         approachPulseActive = false;
         approachPending = false;
         approachPermitUntil = 0;
@@ -685,6 +694,7 @@ public final class CarControl {
         approachPulseActive = false;
         approachPending = false;
         if (!"target nudge elapsed".equals(reason)) {
+            approachModeLatched = false;
             approachPermitUntil = 0;
             approachPulsesRemaining = 0;
         }
