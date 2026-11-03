@@ -59,7 +59,7 @@ public final class MainActivity extends Activity {
     private TextView visionDebugHud;
     private boolean visionDebugShown;
     private volatile long lastRenderedHevcAt;
-    private Button visionButton, approachButton, lockButton;
+    private Button visionButton, lockButton;
     private volatile boolean visionEnabled;
     private long followLastLogAt;
     private Button quickTalkButton, interruptButton;
@@ -69,15 +69,7 @@ public final class MainActivity extends Activity {
         @Override public void run() {
             if (!foreground) return;
             if (aiDriveStatus != null) {
-                if (control.approachPulseActive())
-                    aiDriveStatus.setText("目標導向短移中 · 即將自動 STOP");
-                else if (control.approachAuthorized())
-                    aiDriveStatus.setText("AI 導向已授權 · 剩餘 " +
-                            control.approachPulsesRemaining() + " 次 / " +
-                            control.approachPermitRemainingMs() + "ms");
-                else if (control.approachModeLatched())
-                    aiDriveStatus.setText("導向額度到期 · 重新按「導向」授權");
-                else if (control.visionFollowActive())
+                if (control.visionFollowActive())
                     aiDriveStatus.setText("跟隨人物中 · 最多 8 秒 · 可按急停");
                 else if (control.aiHoldActive())
                     aiDriveStatus.setText("AI 保持中：油門 " +
@@ -92,7 +84,6 @@ public final class MainActivity extends Activity {
                             control.tuning().intervalMs + "ms／包");
                 else aiDriveStatus.setText("AI 巡航：未啟用｜手動按住前進／倒車持續送包");
             }
-            if (approachButton != null) updateApproachButton();
             updateVisionDebugHud();
             main.postDelayed(this, 250);
         }
@@ -167,7 +158,6 @@ public final class MainActivity extends Activity {
                     visionOverlay.selectedTarget() == null ||
                     SystemClock.elapsedRealtime() - visionOverlay.lastFrameAt() > 400)) {
                 control.stopVisionFollow("person lost or inference stale");
-                updateApproachButton();
                 log.i("FOLLOW", "target or image stale; STOP");
             }
             main.postDelayed(this, CrewVision.TARGET_INTERVAL_MS);
@@ -224,7 +214,6 @@ public final class MainActivity extends Activity {
                     PersonTracker.Box target = visionOverlay.selectedTarget();
                     if (target == null || visionOverlay.targetLost()) {
                         control.stopVisionFollow("vision target lost");
-                        updateApproachButton();
                         log.i("FOLLOW", "selected person lost; STOP");
                     } else {
                         VisionFollowPlanner.Step step = VisionFollowPlanner.decide(target);
@@ -232,7 +221,6 @@ public final class MainActivity extends Activity {
                             // One visual risk condition ends the entire session.
                             // Never resume on its own when the person appears smaller again.
                             control.stopVisionFollow(step.reason);
-                            updateApproachButton();
                             log.i("FOLLOW", step.reason + " — session cancelled; STOP");
                             return;
                         }
@@ -261,9 +249,6 @@ public final class MainActivity extends Activity {
             }
         });
         driverLayout = loadDriverLayout();
-        control.setApproachSafetyGate(() -> foreground && drivingMode &&
-                gemini.ready() && routes.wifi() != null &&
-                activeProfile == CarProfile.WL_TECH);
         control.setVisionSafetyGate(() -> foreground && drivingMode &&
                 visionEnabled && crewVision.ready() &&
                 visionOverlay != null && visionOverlay.selectedTarget() != null &&
@@ -271,13 +256,13 @@ public final class MainActivity extends Activity {
                 SystemClock.elapsedRealtime() - visionOverlay.lastFrameAt() <= 400 &&
                 cameraRunning && routes.wifi() != null &&
                 visionCameraAgeMs() >= 0 && visionCameraAgeMs() <= 650);
-        control.setAiSafetyGate(() -> foreground && gemini.ready() &&
-                routes.wifi() != null && cameraAgeMs() >= 0 &&
-                cameraAgeMs() <= 2500 && gemini.liveVideoAgeMs() >= 0 &&
-                gemini.liveVideoAgeMs() <= 2500);
+        // Voice driving no longer depends on blurry/slow FPV frames.
+        // Foreground + human arm + connected Live/Wi-Fi + on-device watchdog remain required.
+        control.setAiSafetyGate(() -> foreground && drivingMode &&
+                gemini.ready() && routes.wifi() != null);
         render();
         log.setListener(s -> runOnUiThread(() -> { if (logs != null) logs.setText(s); }));
-        log.i("APP", "Crew Car v0.1.25; human-authorized AI goal bearing nudges; no vehicle ACK");
+        log.i("APP", "Crew Car v0.1.26; one-tool natural voice driving without direction authorization window; no vehicle ACK");
         routes.diagnostics();
     }
 
@@ -403,9 +388,6 @@ public final class MainActivity extends Activity {
         visionButton = button("辨識", v -> toggleVision());
         visionButton.setTextSize(12);
         topRow.addView(visionButton, new LinearLayout.LayoutParams(dp(64), dp(38)));
-        approachButton = button("導向", v -> requestApproachAssist());
-        approachButton.setTextSize(12);
-        topRow.addView(approachButton, new LinearLayout.LayoutParams(dp(66), dp(38)));
         Button controlLayoutButton = button("操控", v -> openControlLayoutDialog());
         topRow.addView(controlLayoutButton, new LinearLayout.LayoutParams(dp(60), dp(38)));
         lockButton = button("🔒 已上鎖", v -> toggleDriveLock());
@@ -454,7 +436,6 @@ public final class MainActivity extends Activity {
         cameraFrame.addView(hevcPreview, new FrameLayout.LayoutParams(-1, -1));
         visionOverlay = new VisionOverlay(this, selected -> {
             if (control.visionFollowActive()) control.stopVisionFollow();
-            updateApproachButton();
             log.i("VISION", "person target selected manually; previous follow cancelled");
         });
         cameraFrame.addView(visionOverlay, new FrameLayout.LayoutParams(-1, -1));
@@ -820,8 +801,8 @@ public final class MainActivity extends Activity {
             if (!gemini.sendText(prompt.getText().toString())) log.e("LIVE", "請先連線 Gemini");
             else log.i("LIVE", "text turn sent (content redacted)");
         }), new LinearLayout.LayoutParams(-1, dp(50)));
-        label(root, "Gemini 新增 approach_target：手機先按「導向」授權，每次依左前、正前或右前短移 150～600ms 並自動停止；" +
-                "不依賴人物辨識，不會計算實際距離或避障。長巡航仍需明確指令。", 12);
+        label(root, "Gemini 語音駕駛：解鎖後直接說「前進一點／往前進／持續前進／往左前方」。" +
+                "不需要額外導向授權。本地程式決定動作時間，到期自動停止；無測距與避障能力。", 12);
         root.addView(button("測試 AI 查詢工具（不移動）", v -> {
             if (!gemini.sendText("請先呼叫 get_car_status、get_camera_status、get_network_status，然後用繁體中文告訴我連線與安全狀態，不要移動小車。")) {
                 log.e("TOOL", "Live disconnected; cannot request tool smoke test");
@@ -1313,7 +1294,6 @@ public final class MainActivity extends Activity {
         visionMetrics.reset();
         // A restarted camera must not inherit detections from the old feed/session.
         if (control != null) control.stopVisionFollow();
-        updateApproachButton();
         if (visionEnabled) {
             crewVision.setEnabled(false);
             visionEnabled = false;
@@ -1374,7 +1354,6 @@ public final class MainActivity extends Activity {
 
     private void emergencyStopAndLock() {
         control.stopVisionFollow();
-        updateApproachButton();
         releaseManualInputs();
         if (drivePad != null) drivePad.setControlsAvailable(false);
         control.disarm();
@@ -1387,60 +1366,6 @@ public final class MainActivity extends Activity {
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         updateLockButton();
         log.i("SAFETY", "USER E-STOP: disarmed, manual re-arm required");
-    }
-
-    private void updateApproachButton() {
-        if (approachButton == null || control == null) return;
-        boolean active = control.approachPulseActive() || control.approachAuthorized();
-        approachButton.setText(active ? "導向 ON" : "導向");
-        approachButton.setTextSize(11);
-        approachButton.setContentDescription(active ?
-                "取消 AI 導向授權並停止上鎖" : "授權 AI 朝明確指定方向短距離前進");
-        approachButton.setTextColor(active ?
-                Color.rgb(177, 36, 42) : Color.rgb(28, 45, 60));
-    }
-
-    /** An explicit UI authorization. The model cannot grant itself motor rights. */
-    private void requestApproachAssist() {
-        if (control.approachAuthorized() || control.approachPulseActive()) {
-            control.cancelApproachAssist();
-            emergencyStopAndLock();
-            updateApproachButton();
-            return;
-        }
-        if (!foreground || !drivingMode || !gemini.ready() ||
-                activeProfile != CarProfile.WL_TECH || routes.wifi() == null ||
-                !control.armed() || control.manual() ||
-                control.owner() != MotorAuthorityPolicy.Owner.IDLE) {
-            android.widget.Toast.makeText(this,
-                    "請連接 Gemini、WL 小車 Wi-Fi 並解鎖；需先停車才能授權",
-                    android.widget.Toast.LENGTH_LONG).show();
-            return;
-        }
-        new AlertDialog.Builder(this)
-                .setTitle("啟用 AI 目標導向（短移實驗）")
-                .setMessage("目前不能可靠辨識目標距離或障礙物。請先架空車輪；" +
-                        "實地只能在無人車、空曠且可立即斷電的私人場地監督使用。\n\n" +
-                        "授權 20 秒內最多 3 次短移，每次 150～600ms。每次都需你明確" +
-                        "指定左前、正前或右前方向，AI 不得自行連續前進或繞圈；" +
-                        "沒有明確方向時必須詢問。任何 STOP、手動接管或離開畫面都會取消授權。")
-                .setNegativeButton("取消", null)
-                .setPositiveButton("授權短距離導向", (dialog, which) -> {
-                    if (!foreground || !drivingMode || !gemini.ready() ||
-                            activeProfile != CarProfile.WL_TECH) return;
-                    String result = control.beginApproachAssist();
-                    if (result.startsWith("blocked")) {
-                        android.widget.Toast.makeText(this, result,
-                                android.widget.Toast.LENGTH_LONG).show();
-                    } else {
-                        android.widget.Toast.makeText(this,
-                                "已授權。請說：往右前方前進一點",
-                                android.widget.Toast.LENGTH_LONG).show();
-                        log.i("TARGET", "user explicitly authorized short goal bearing nudges");
-                    }
-                    updateApproachButton();
-                })
-                .show();
     }
 
     /** Local rendered-image / screen-capture recency; not sensor exposure latency. */
@@ -1483,7 +1408,6 @@ public final class MainActivity extends Activity {
         if (visionOverlay != null) visionOverlay.setVisionEnabled(visionEnabled);
         crewVision.setEnabled(visionEnabled);
         updateVisionButton();
-        updateApproachButton();
         updateVisionDebugHud();
         log.i("VISION", visionEnabled ?
                 "offline person detection enabled; motor follow separately authorized" :
@@ -1593,14 +1517,12 @@ public final class MainActivity extends Activity {
             @Override public void onSpeechState(boolean speaking) {
                 runOnUiThread(() -> updateTalkButtons());
             }
-            @Override public String onApproachTarget(String bearing, int durationMs) {
+            @Override public String onDriveIntent(String intent) {
                 if (!foreground || !drivingMode || !gemini.ready() ||
                         activeProfile != CarProfile.WL_TECH || routes.wifi() == null ||
                         !control.armed())
-                    return "blocked: app foreground, Gemini, Wi-Fi, WL and manual unlock required";
-                String result = control.approachTarget(bearing, durationMs);
-                main.post(() -> updateApproachButton());
-                return result;
+                    return "blocked: Gemini/WL Wi-Fi/foreground and manual unlock required";
+                return control.driveIntent(intent);
             }
             @Override public String onSteer(String direction, int holdMs) {
                 if (!control.armed()) return "blocked: manual safety lock";
@@ -1635,15 +1557,11 @@ public final class MainActivity extends Activity {
                         "manual_override", control.manual(),
                         "active_command", control.activeCommand(),
                         "motor_authority", control.owner().name(),
-                        "approach_tool_available", activeProfile == CarProfile.WL_TECH,
-                        "approach_authorized", control.approachAuthorized(),
-                        "approach_mode_latched", control.approachModeLatched(),
-                        "approach_pulse_active", control.approachPulseActive(),
-                        "approach_pulses_remaining", control.approachPulsesRemaining(),
-                        "approach_authorization_remaining_ms",
-                                control.approachPermitRemainingMs(),
-                        "approach_bearing_required", true,
-                        "target_distance_measured", false,
+                        "voice_drive_intent_available", activeProfile == CarProfile.WL_TECH,
+                        "voice_drive_intent_active", control.aiHoldActive(),
+                        "voice_drive_intent_requires_extra_approval", false,
+                        "voice_drive_intent_requires_manual_arm", true,
+                        "voice_drive_intent_distance_measured", false,
                         "last_stop_reason", control.lastStopReason(),
                         "last_stop_local_send_delay_ms", control.lastStopLocalDelayMs(),
                         "last_stop_sent_at_elapsed_ms", control.lastStopSentAt(),

@@ -205,3 +205,11 @@ The camera-based automatic person-follow entry in the header is temporarily repl
 Old Gemini cruise commands still exist for a human explicitly saying to keep driving, but sustained left/right steering now automatically re-centers after at most **650ms** to avoid circular driving. E-STOP, manual override, profile switching and app backgrounding revoke the nudge authorization. No distance sensor, obstacle detection or motor acknowledgment; these are bounded supervised experiments only.
 
 [Goal-Direction nudge physical QA and tool contract](docs/GOAL_DIRECTION_NUDGE_QA.md).
+
+## v0.1.26 — Natural Gemini Voice Driving (supersedes v0.1.25 direction authorization)
+
+A normal 「往前進」 is now a **local 2.5-second forward drive**, not a 0.5-second single tap. 「往前一點」 means a 0.5-second nudge; only an explicit 「持續前進」 starts the bounded 15-second lease. 「往左／右前方」 combines throttle and steering, recenters steering in 650ms, and finishes after the 2-second segment. New Gemini Live sessions see **one movement tool**, `drive_intent`, with a semantic enum rather than model-supplied milliseconds. The model must not autonomously chain tool calls.
+
+**Removed the extra 導向 button, 20-second authorization window and 3-pulse quota.** After the normal manual unlock, spoken directions work without another confirmation screen. Blurry FPV no longer gates a clear human-specified voice direction, but also does **not** provide distance or obstacle avoidance. STOP, manual priority, app foreground, Gemini/Wi-Fi connection checks and local finite watchdog **remain**. The old image-follow internals are retained but not exposed as a voice driving mode.
+
+See [Natural Voice Drive QA](docs/NATURAL_VOICE_DRIVE_QA.md). App version 0.1.26 / code 27.

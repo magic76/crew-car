@@ -39,7 +39,7 @@ public final class GeminiLive {
     public interface Listener {
         void onStatus(String value);
         String onDrive(String direction, int milliseconds);
-        String onApproachTarget(String bearing, int durationMs);
+        String onDriveIntent(String intent);
         String onDriveState(String steering, String throttle, int leaseMs);
         String onSteer(String direction, int holdMs);
         void onSpeechState(boolean speaking);
@@ -232,25 +232,20 @@ public final class GeminiLive {
 
     private JSONObject setup() {
         try {
-            String instruction = "你是 Crew Car 的繁體中文語音助手。你可以看到低頻率車頭影像，也可聽使用者說話。" +
-                    "可用工具：approach_target 朝前方目標短促導向、get_car_status 查狀態、get_camera_status 查鏡頭、get_network_status 查網路、stop_car 急停、lock_car 鎖車、drive_car 單軸短脈衝、set_drive_state 持續巡航。" +
-                    "使用者要求朝目標、往左前方、往右前方或向前靠近一點時，優先使用 approach_target，不要用長時間 set_drive_state，也不要用 drive_car(left/right) 原地打轉。" +
-                    "approach_target 的 bearing 只能是 front_left/ahead/front_right，duration_ms 150..600，實際同時輸出前進＋微轉向，完成後停止。需要使用者先在手機按「導向」授權，再用語音明確給方向。" +
-                    "如果鏡頭拍不清或沒有清楚的使用者方向資訊，先詢問左前／正前／右前；絕不可猜測目標方位，不可說已到達目標。每個明確移動指令最多一個短動作，嚴禁自行連續呼叫形成巡航。" +
-                    "set_drive_state 是本機自動保持並週期送出的油門/方向狀態，不是只送一次。說往前一直開，請先呼叫 steering=center,throttle=forward,lease_ms=15000；小車會自動持續送封包，不需要每 650ms 再送一次。" +
-                    "接下來只在需要調整方向時呼叫 steer_car(direction=left/right/center,hold_ms=550)，它只短暫轉向，持續保留前進/倒車油門，不重新踩剎車也不延長巡航期限。" +
-                    "set_drive_state 的左右轉向最多約650ms後自動回正；不能維持長時間固定打方向繞圈。只有使用者明確要求直線持續巡航，才考慮 set_drive_state，且仍應確認車頭影像。" +
-                    "一次巡航預設 15000ms、最多 30000ms；本機到期或影像過期會自動 STOP，不可能無期限自駕。使用者說停、切換倒車、手動接管時按指令立即處理。" +
-                    "硬體只有車頭攝影機，沒有超音波、雷達、碰撞、GPS、里程計或電量遙測等其他感測器。" +
-                    "你只能從傳入的即時畫面描述可見物體和大致方向；無法測量真實距離、車速、位置、實際轉角或是否已成功移動。" +
-                    "get_camera_status 只讀取畫面接收與 Live 傳送狀態，不包含畫面內容；不要把它誤當避障感測器。" +
-                    "先用只讀工具回答車況，不能編造電池量、位置、距離、實際移動、障礙物偵測或感測器資料。" +
-                    "只有使用者明確要求移動，才可使用 drive_car、approach_target 或 set_drive_state；不得自行追人、追車、長時間繞圈或規劃自主導航。" +
-                    "若鏡頭未更新或看不清目標，不可從畫面推斷位置；只有人類已明確授權並口述左前／正前／右前時，才能用 approach_target 做一次短脈衝。" +
-                    "看見人、車或障礙物阻擋預定路線時應拒絕運動；沒有測距或避障能力，不能保證安全。" +
-                    "工具回傳 queued 只代表移動已排入本機佇列；TX 成功也不代表小車回覆或真正移動，絕對不可宣稱完成移動。" +
-                    "stop_car 和 lock_car 可隨時呼叫；只有人類可以在手機介面重新解鎖。" +
-                    "同一意圖連續失敗至多嘗試兩次，之後停止並告知使用者。";
+            String instruction = "你是 Crew Car 的繁體中文語音遙控助手。最重要的是依使用者語意正確操作；不是每次只移動一步。" +
+                    "你有一個對外移動工具 drive_intent；它只有 intent 參數，時間與油門由 Android 本地決定，不要自己指定毫秒或反覆呼叫。" +
+                    "使用者說「往前進／向前開／前進」請選 intent=forward，一次會持續約2.5秒，不是點動。" +
+                    "只有使用者說「往前一點／稍微前進／動一下」才選 forward_small，約0.5秒。" +
+                    "說「倒車／往後退」選 backward，約2秒；「後退一點」選 backward_small，0.5秒。不可自動長時間倒車。" +
+                    "只有明確說「持續往前／一直往前」才選 forward_continuous，本地最多15秒就停止，並非無限行駛。" +
+                    "「往左前方／往右前方」對應 front_left/front_right，前進時短暫修正方向；加「一點」才選 front_left_small/front_right_small。" +
+                    "不要把前進解讀成一次極短的 pulse，也不要原地一直左轉右轉。每個新的明確使用者移動指令至多一次 drive_intent，不自行連鎖工具。" +
+                    "不需要額外按「導向」、8秒或20秒授權；但車輛仍須由人類在 App 解鎖，只有使用者明確要求才可移動。" +
+                    "使用者說停／不要動時立即呼叫 stop_car；說鎖車則呼叫 lock_car。即使你正在說話，也應優先回應停止。" +
+                    "若目標方位模糊或只有不清楚的鏡頭，應詢問左前、正前或右前，不要猜方向、距離、障礙物或是否抵達。" +
+                    "你可以讀取 get_car_status/get_camera_status/get_network_status，但這些不是實車馬達 ACK、里程計或碰撞感測器。" +
+                    "影像模糊不阻止使用者指定方位的語音駕駛，但不能據此主張路線安全；使用者須在旁監督並保留急停權。" +
+                    "工具回覆 queued 只代表本機已接收命令，無法證明車子移動或抵達。";
             return new JSONObject().put("setup", new JSONObject()
                     .put("model", MODEL)
                     .put("generationConfig", new JSONObject()
@@ -421,7 +416,7 @@ public final class GeminiLive {
                     try {
                         if (safetyOverride && ("drive_car".equals(name) ||
                                 "set_drive_state".equals(name) || "steer_car".equals(name) ||
-                                "approach_target".equals(name))) {
+                                "drive_intent".equals(name))) {
                             result = toolStatus("blocked", "STOP/lock in same tool batch takes priority");
                         } else {
                             result = executeTool(name, call.optJSONObject("args"));
@@ -479,20 +474,20 @@ public final class GeminiLive {
                         .put("device_acknowledged", false)
                         .put("motion_verified", false);
             }
-            case "approach_target": {
-                String bearing = args == null ? "" : args.optString("bearing", "");
-                int duration = args == null ? -1 : args.optInt("duration_ms", -1);
-                String violation = CarToolPolicy.validateApproach(bearing, duration);
+            case "drive_intent": {
+                String intent = args == null ? "" : args.optString("intent", "");
+                String violation = CarToolPolicy.validateDriveIntent(intent);
                 if (violation != null) return toolStatus("blocked", violation);
-                String result = listener.onApproachTarget(bearing, duration);
+                DriveIntentPolicy.Plan plan = DriveIntentPolicy.plan(intent);
+                String result = listener.onDriveIntent(intent);
                 boolean blocked = result == null || result.startsWith("blocked");
                 return toolStatus(blocked ? "blocked" : "queued",
                         result == null ? "no result" : result)
-                        .put("throttle", "forward_only")
-                        .put("steering", bearing)
-                        .put("duration_ms", duration)
+                        .put("intent", intent)
+                        .put("local_lease_ms", plan.leaseMs)
                         .put("automatic_stop", true)
-                        .put("target_reached", false)
+                        .put("extra_authorization_required", false)
+                        .put("manually_armed_required", true)
                         .put("distance_measured", false)
                         .put("obstacle_clearance_verified", false)
                         .put("device_acknowledged", false)

@@ -15,15 +15,16 @@ public final class CarToolPolicy {
     private CarToolPolicy() {}
 
     public static boolean isSupported(String name) {
-        return "drive_car".equals(name) || "stop_car".equals(name) ||
+        // Expose a single motion entry even if a stale model hallucinates old tools.
+        return "drive_intent".equals(name) || "stop_car".equals(name) ||
                 "lock_car".equals(name) || "get_car_status".equals(name) ||
-                "get_camera_status".equals(name) || "get_network_status".equals(name) ||
-                "set_drive_state".equals(name) || "steer_car".equals(name) ||
-                "approach_target".equals(name);
+                "get_camera_status".equals(name) || "get_network_status".equals(name);
     }
 
-    public static String validateApproach(String bearing, int durationMs) {
-        return TargetApproachPolicy.validate(bearing, durationMs);
+    /** The model never supplies movement time; the on-device plan is deterministic. */
+    public static String validateDriveIntent(String intent) {
+        return DriveIntentPolicy.plan(intent) == null ?
+                "blocked: unsupported voice intent" : null;
     }
 
     public static String validateHold(String steering, String throttle, int leaseMs) {

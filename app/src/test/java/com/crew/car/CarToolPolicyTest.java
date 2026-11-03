@@ -5,22 +5,30 @@ import static org.junit.Assert.*;
 
 public final class CarToolPolicyTest {
     @Test public void knownTools() {
-        for (String name : new String[]{"drive_car","stop_car","lock_car",
-                "get_car_status","get_camera_status","get_network_status","approach_target"}) {
+        for (String name : new String[]{"drive_intent","stop_car","lock_car",
+                "get_car_status","get_camera_status","get_network_status"}) {
             assertTrue(name, CarToolPolicy.isSupported(name));
         }
         assertFalse(CarToolPolicy.isSupported("unlock_car"));
         assertFalse(CarToolPolicy.isSupported("drive_sequence"));
+        assertFalse(CarToolPolicy.isSupported("drive_car"));
+        assertFalse(CarToolPolicy.isSupported("set_drive_state"));
+        assertFalse(CarToolPolicy.isSupported("steer_car"));
         assertFalse(CarToolPolicy.isSupported(""));
     }
 
-    @Test public void approachToolRejectsBlindLongOrReverseRequests() {
-        assertNull(CarToolPolicy.validateApproach("front_left",150));
-        assertNull(CarToolPolicy.validateApproach("ahead",600));
-        assertNull(CarToolPolicy.validateApproach("front_right",300));
-        assertNotNull(CarToolPolicy.validateApproach("left",300));
-        assertNotNull(CarToolPolicy.validateApproach("backward",300));
-        assertNotNull(CarToolPolicy.validateApproach("ahead",30000));
+    @Test public void oneSemanticToolReplacesOldDirectionAuthorization() {
+        assertNull(CarToolPolicy.validateDriveIntent("forward"));
+        assertNull(CarToolPolicy.validateDriveIntent("forward_small"));
+        assertNull(CarToolPolicy.validateDriveIntent("forward_continuous"));
+        assertNull(CarToolPolicy.validateDriveIntent("front_left"));
+        assertNull(CarToolPolicy.validateDriveIntent("front_right"));
+        assertNull(CarToolPolicy.validateDriveIntent("backward"));
+        assertNull(CarToolPolicy.validateDriveIntent("backward_small"));
+        assertNotNull(CarToolPolicy.validateDriveIntent("backward_continuous"));
+        assertNotNull(CarToolPolicy.validateDriveIntent("left"));
+        assertNotNull(CarToolPolicy.validateDriveIntent(null));
+        assertFalse(CarToolPolicy.isSupported("approach_target"));
     }
 
     @Test public void validBoundaries() {
