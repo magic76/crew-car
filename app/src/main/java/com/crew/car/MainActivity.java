@@ -309,6 +309,16 @@ public final class MainActivity extends Activity {
         // Foreground + human arm + connected Live/Wi-Fi + on-device watchdog remain required.
         control.setAiSafetyGate(() -> foreground && drivingMode &&
                 gemini.ready() && routes.wifi() != null);
+        // Only video-guided and explicitly bounded cruise require this gate.
+        // Fresh JPEG queued != delivered frame, safe obstacle clearance or depth.
+        control.setAiVideoGate(() -> {
+            long cameraAge = cameraAgeMs();
+            long liveAge = gemini.liveVideoAgeMs();
+            return foreground && drivingMode && cameraRunning &&
+                    routes.wifi() != null && gemini.ready() &&
+                    cameraAge >= 0 && cameraAge <= 1500 &&
+                    liveAge >= 0 && liveAge <= 1500;
+        });
         render();
         log.setListener(s -> runOnUiThread(() -> { if (logs != null) logs.setText(s); }));
         log.i("APP", "Crew Car voice safety: short supervised intent leases, diagonal dual-axis STOP, no collision avoidance or vehicle ACK");
@@ -829,7 +839,8 @@ public final class MainActivity extends Activity {
             }
             updateLockButton();
         });
-        label(root, "按住前進／倒車會由本機持續送封包，直到放開、急停或失去控制更新。AI 油門保持可一次最多 30 秒，方向可以獨立微調；車端沒有 ACK。", 12);
+        label(root, "手動搖桿按住可持續控制；語音「持續前進」每次最多 2 秒，必須有新鮮車頭畫面且到期停止。" +
+                " Gemini 看畫面選左／中／右時只走 0.5 秒，無測距、避障或車端 ACK。", 12);
 
         // The technical tuning indicator belongs in Control settings, not
         // a permanent bar below the FPV feed.
@@ -867,9 +878,16 @@ public final class MainActivity extends Activity {
             if (!gemini.sendText(prompt.getText().toString())) log.e("LIVE", "請先連線 Gemini");
             else log.i("LIVE", "text turn sent (content redacted)");
         }), new LinearLayout.LayoutParams(-1, dp(50)));
-        label(root, "Gemini 語音駕駛：解鎖後可說「前進一點／往前進／往左前方」。" +
-                "僅限短距離且需人在旁監督；斜向轉向與油門會一起停止。" +
-                "持續前進暫停支援；相機無測距或可靠避障能力，靠近牆壁請勿啟動。", 12);
+        label(root, "語音「持續前進」一次最多 2 秒並到期停止；說「朝著前面的人走」讓 Gemini" +
+                " 從新鮮 FPV 判斷左、中、右，只走 0.5 秒，不依賴本地人物辨識框。" +
+                " 不支援自行連續跟隨，也沒有測距／避障；請在空曠地測試。", 12);
+        root.addView(button("讓 Gemini 看人物方向並走一步（最多 0.5 秒）", v -> {
+            if (!gemini.sendText("這是使用者明確要求：請觀察你近期實際看見的車頭 FPV 畫面。" +
+                    " 若清楚只有一個人物，呼叫 guide_toward_person 選 left/center/right；" +
+                    " 看不清或有多個人物請選 unknown，不要猜測，不要自動連續行駛。")) {
+                log.e("TOOL", "Gemini disconnected: cannot request person guide");
+            } else log.i("TOOL", "single visual person-guided step requested (no automatic chaining)");
+        }), new LinearLayout.LayoutParams(-1, dp(50)));
         root.addView(button("測試 AI 查詢工具（不移動）", v -> {
             if (!gemini.sendText("請先呼叫 get_car_status、get_camera_status、get_network_status，然後用繁體中文告訴我連線與安全狀態，不要移動小車。")) {
                 log.e("TOOL", "Live disconnected; cannot request tool smoke test");
@@ -1650,6 +1668,22 @@ public final class MainActivity extends Activity {
                     return "blocked: Gemini/WL Wi-Fi/foreground and manual unlock required";
                 return control.driveIntent(intent);
             }
+            @Override public String onGuideTowardPerson(String bearing) {
+                if (visionAlign.active())
+                    return "blocked: local person alignment is active";
+                if (!foreground || !drivingMode || !gemini.ready() ||
+                        activeProfile != CarProfile.WL_TECH || routes.wifi() == null ||
+                        !control.armed())
+                    return "blocked: Gemini/WL Wi-Fi/foreground and manual unlock required";
+                // This requires recent camera and video queue activity. Neither proves
+                // Gemini understood the person or that the path is unobstructed.
+                long age = cameraAgeMs();
+                long videoAge = gemini.liveVideoAgeMs();
+                if (!cameraRunning || age < 0 || age > 1500 ||
+                        videoAge < 0 || videoAge > 1500)
+                    return "blocked: FPV / Gemini video queue stale; cannot guide by image";
+                return control.guideTowardPerson(bearing);
+            }
             @Override public String onAlignSelectedPerson() {
                 if (!gemini.ready())
                     return "blocked: Gemini Live disconnected";
@@ -1702,6 +1736,12 @@ public final class MainActivity extends Activity {
                         "person_align_status", visionAlign.status(),
                         "person_align_obstacle_avoidance", false,
                         "voice_drive_intent_long_cruise_available", false,
+                        "voice_drive_bounded_continuous_available", true,
+                        "voice_drive_bounded_continuous_ms", DriveIntentPolicy.SUPERVISED_CRUISE_MS,
+                        "voice_drive_bounded_continuous_video_required", true,
+                        "gemini_person_bearing_guidance_available", true,
+                        "gemini_person_bearing_step_ms", DriveIntentPolicy.NUDGE_MS,
+                        "gemini_person_bearing_requires_local_person_box", false,
                         "voice_drive_intent_obstacle_avoidance_available", false,
                         "last_stop_reason", control.lastStopReason(),
                         "last_stop_local_send_delay_ms", control.lastStopLocalDelayMs(),
@@ -1751,6 +1791,8 @@ public final class MainActivity extends Activity {
                         "live_video_frame_queue_age_ms", liveAge,
                         "live_video_fresh", liveAge >= 0 && liveAge <= 2500,
                         "live_video_frames_queued", gemini.liveVideoFramesQueued(),
+                        "gemini_person_bearing_guidance_available", true,
+                        "gemini_person_bearing_visual_understanding_confirmed", false,
                         "scene_recognition_available_here", visionEnabled,
                         "local_person_detector_enabled", visionEnabled,
                         "local_person_detector_ready", crewVision != null && crewVision.ready(),

@@ -10,12 +10,15 @@ public class DriveIntentPolicyTest {
         DriveIntentPolicy.Plan cruise = DriveIntentPolicy.plan("forward_continuous");
         assertEquals(500, nudge.leaseMs);
         assertEquals(900, move.leaseMs);
-        assertNull("blind continuous driving is disabled", cruise);
+        assertEquals(2000, cruise.leaseMs);
+        assertEquals("center", cruise.steering);
+        assertEquals("forward", cruise.throttle);
         assertEquals("forward", nudge.throttle);
         assertEquals("forward", move.throttle);
         assertEquals("center", move.steering);
         assertTrue(nudge.leaseMs < move.leaseMs);
-        assertTrue(move.leaseMs <= 900);
+        assertTrue(move.leaseMs < cruise.leaseMs);
+        assertTrue(cruise.leaseMs <= DriveIntentPolicy.SUPERVISED_CRUISE_MS);
     }
     @Test public void frontDirectionsCombineSteeringWithForwardThrottle() {
         for (String intent : new String[]{"front_left","front_right",
@@ -54,7 +57,7 @@ public class DriveIntentPolicyTest {
             assertNull("must reject " + intent, DriveIntentPolicy.plan(intent));
         }
         assertTrue(DriveIntentPolicy.FRONT_DIAGONAL_MS <= DriveIntentPolicy.TURN_RECENTER_MS);
-        assertNull(DriveIntentPolicy.plan("forward_continuous"));
+        assertNotNull(DriveIntentPolicy.plan("forward_continuous"));
         for (String intent : new String[]{"forward", "backward", "front_left", "front_right",
                 "forward_small", "backward_small", "front_left_small", "front_right_small"}) {
             DriveIntentPolicy.Plan plan = DriveIntentPolicy.plan(intent);

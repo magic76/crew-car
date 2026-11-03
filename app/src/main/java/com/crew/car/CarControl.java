@@ -48,6 +48,8 @@ public final class CarControl {
     /** Voice diagonals stop both axes when steering ends; no straight throttle tail. */
     private volatile boolean aiStopWithSteering;
     private volatile BooleanSupplier aiSafetyGate = () -> false;
+    private volatile BooleanSupplier aiVideoGate = () -> false;
+    private volatile boolean aiVideoGuarded;
     private volatile long lastAiSafetyCheckAt;
     private final AtomicLong motionEpoch = new AtomicLong();
     private volatile String lastTxCommand = "none";
@@ -105,6 +107,7 @@ public final class CarControl {
                 if (aiSteerReleaseAt > 0 && now >= aiSteerReleaseAt) {
                     aiSteerReleaseAt = 0;
                     aiStopWithSteering = false;
+        aiVideoGuarded = false;
                     aiSteer = 0;
                     String command = "axes:0:" + aiThrottle;
                     if (!command.equals(active)) {
@@ -116,7 +119,10 @@ public final class CarControl {
                 if (now - lastAiSafetyCheckAt >= 100) {
                     lastAiSafetyCheckAt = now;
                     boolean safe;
-                    try { safe = aiSafetyGate.getAsBoolean(); } catch (Exception e) { safe = false; }
+                    try {
+                        safe = aiSafetyGate.getAsBoolean() &&
+                                (!aiVideoGuarded || aiVideoGate.getAsBoolean());
+                    } catch (Exception e) { safe = false; }
                     if (!safe) {
                         aiHoldActive = false;
                         armed = false; // fail closed: require human to re-arm after lost safety
@@ -183,6 +189,11 @@ public final class CarControl {
     public void setAiSafetyGate(BooleanSupplier gate) {
         aiSafetyGate = gate == null ? () -> false : gate;
     }
+
+    /** Camera/JPEG queue freshness is a watchdog, not depth or obstacle detection. */
+    public void setAiVideoGate(BooleanSupplier gate) {
+        aiVideoGate = gate == null ? () -> false : gate;
+    }
     public boolean visionFollowActive() { return visionFollowActive && armed && SystemClock.elapsedRealtime() < visionFollowLimitAt; }
     public long visionAlignPulseAcceptedAt() { return visionAlignPulseAcceptedAt; }
     public long visionAlignPulseStoppedAt() { return visionAlignPulseStoppedAt; }
@@ -229,6 +240,7 @@ public final class CarControl {
         visionFollowLimitAt = 0;
         aiSteerReleaseAt = 0;
         aiStopWithSteering = false;
+        aiVideoGuarded = false;
         boolean stopPrevious = armed || !"stop".equals(active);
         armed = false;
         manual = false;
@@ -277,6 +289,7 @@ public final class CarControl {
         aiHoldActive = false;
         aiSteerReleaseAt = 0;
         aiStopWithSteering = false;
+        aiVideoGuarded = false;
         boolean stopCurrent = armed || !"stop".equals(active);
         armed = false;
         manual = false;
@@ -336,11 +349,11 @@ public final class CarControl {
      * Safety gate rechecked every 100ms and expiry sends neutral.
      */
     public String holdAiAxes(String steering, String throttle, int leaseMs) {
-        return holdAiAxes(steering, throttle, leaseMs, false);
+        return holdAiAxes(steering, throttle, leaseMs, false, false);
     }
 
     private String holdAiAxes(String steering, String throttle, int leaseMs,
-                              boolean stopWithSteering) {
+                              boolean stopWithSteering, boolean videoGuarded) {
         String violation = CarToolPolicy.validateHold(steering, throttle, leaseMs);
         if (violation != null) return violation;
         if (!armed) return "blocked: control locked";
@@ -364,8 +377,11 @@ public final class CarControl {
             return "stopped: both axes neutral";
         }
         boolean safe;
-        try { safe = aiSafetyGate.getAsBoolean(); } catch (Exception e) { safe = false; }
-        if (!safe) return "blocked: Live/Wi-Fi/foreground safety gate";
+        try {
+            safe = aiSafetyGate.getAsBoolean() &&
+                    (!videoGuarded || aiVideoGate.getAsBoolean());
+        } catch (Exception e) { safe = false; }
+        if (!safe) return "blocked: Live/Wi-Fi/foreground or current video safety gate";
         final String cmd = "axes:" + steer + ":" + gas;
         final long epoch = motionEpoch.get();
         final long submittedAt = SystemClock.elapsedRealtime();
@@ -379,9 +395,10 @@ public final class CarControl {
                     (!MotorAuthorityPolicy.canClaim(owner(), MotorAuthorityPolicy.Owner.GEMINI) &&
                      !MotorAuthorityPolicy.canUpdate(owner(), MotorAuthorityPolicy.Owner.GEMINI))) return;
             try {
-                if (!aiSafetyGate.getAsBoolean()) {
+                if (!aiSafetyGate.getAsBoolean() ||
+                        (videoGuarded && !aiVideoGate.getAsBoolean())) {
                     armed = false;
-                    stopInternal("AI gate rejected");
+                    stopInternal("AI or video gate rejected");
                     return;
                 }
             } catch (Exception e) {
@@ -392,6 +409,7 @@ public final class CarControl {
             aiSteer = steer;
             aiThrottle = gas;
             aiStopWithSteering = stopWithSteering;
+            aiVideoGuarded = videoGuarded;
             // Unverified voice diagonals stop BOTH axes before this release.
             // Legacy internal steering-only callers may re-center while holding gas.
             long now = SystemClock.elapsedRealtime();
@@ -457,6 +475,17 @@ public final class CarControl {
      * No secondary UI authorization or 20-second mode and no self-renewing AI loop.
      */
     public synchronized String driveIntent(String intent) {
+        return driveIntentInternal(intent, "forward_continuous".equals(intent));
+    }
+
+    /** One 500ms step from a Gemini-proposed person bearing; no autonomous chaining. */
+    public synchronized String guideTowardPerson(String bearing) {
+        String intent = PersonBearingPolicy.intentFor(bearing);
+        if (intent == null) return "blocked: ambiguous person direction; no movement";
+        return driveIntentInternal(intent, true);
+    }
+
+    private synchronized String driveIntentInternal(String intent, boolean videoGuarded) {
         DriveIntentPolicy.Plan plan = DriveIntentPolicy.plan(intent);
         if (plan == null) return "blocked: unsupported voice driving intent";
         if (!armed || manual || visionFollowActive || aiHoldActive ||
@@ -467,12 +496,13 @@ public final class CarControl {
         if (lastDriveIntentAt > 0 && now - lastDriveIntentAt < 750)
             return "blocked: drive intent cooldown; wait for previous movement";
         String result = holdAiAxes(plan.steering, plan.throttle, plan.leaseMs,
-                plan.stopWithSteering);
+                plan.stopWithSteering, videoGuarded);
         if (result != null && !result.startsWith("blocked")) {
             lastDriveIntentAt = now;
             log.i("DRIVE_INTENT", "intent=" + plan.intent +
                     " durationMs=" + plan.leaseMs +
                     " stopBothAxes=" + plan.stopWithSteering +
+                    " videoFreshnessRequired=" + videoGuarded +
                     " (no car acknowledgement)");
         }
         return result;
@@ -641,6 +671,7 @@ public final class CarControl {
         visionFollowLimitAt = 0;
         aiSteerReleaseAt = 0;
         aiStopWithSteering = false;
+        aiVideoGuarded = false;
         aiHoldActive = false;
         aiSteer = 0;
         aiThrottle = 0;
@@ -671,6 +702,7 @@ public final class CarControl {
         visionFollowLimitAt = 0;
         aiSteerReleaseAt = 0;
         aiStopWithSteering = false;
+        aiVideoGuarded = false;
         aiHoldActive = false;
         aiSteer = 0;
         aiThrottle = 0;
