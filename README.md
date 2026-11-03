@@ -197,3 +197,11 @@ Pure-Java arbitration/telemetry tests and an [Android CI workflow](.github/workf
 The landscape settings vehicle selector now exposes only **自訂封包** and **WL Tech FPV**. The unverified **KL FPV** selection and its development-only settings copy are hidden, without removing KL protocol scaffolding, stored per-vehicle preferences, or its existing fail-closed protection. When upgrading from a previously saved KL selection, the visible profile defaults to WL Tech; **no car automatically arms or sends a motor command**. Existing WL/custom behavior and all camera, manual-control, AI and Vision modules are unchanged.
 
 To restore KL in a later version, explicitly re-add the choice only after the protocol has been validated. This release does not attempt to activate KL.
+
+## v0.1.25 — Gemini goal-bearing nudge (no indefinite circles)
+
+The camera-based automatic person-follow entry in the header is temporarily replaced by **導向**. With WL Tech car Wi-Fi, Gemini Live and a manually unlocked car, tapping 導向 confirms a 20-second **human authorization for at most three short target-direction nudges**. It sends no motor movement merely by granting permission. Say 「往左前方前進一點」、「正前方稍微前進」 or 「右前方移動一下」; Gemini's new `approach_target` tool can command forward+left/center/right simultaneously in one WL packet for **150–600ms**, using max 50% of OEM command gains and automatic neutral STOP. The model must ask for an explicit bearing when imagery is unclear, cannot infer physical distance, cannot claim to reach the target, and is forbidden to autonomously chain nudges.
+
+Old Gemini cruise commands still exist for a human explicitly saying to keep driving, but sustained left/right steering now automatically re-centers after at most **650ms** to avoid circular driving. E-STOP, manual override, profile switching and app backgrounding revoke the nudge authorization. No distance sensor, obstacle detection or motor acknowledgment; these are bounded supervised experiments only.
+
+[Goal-Direction nudge physical QA and tool contract](docs/GOAL_DIRECTION_NUDGE_QA.md).
