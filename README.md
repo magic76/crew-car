@@ -191,3 +191,9 @@ The motor sender now records explicit exclusive ownership (LOCKED, IDLE, MANUAL,
 A local, opt-in Vision Debug HUD is available under **進階與診斷**. It shows completed inference FPS, model/callback timing, target confidence and lateral offset, motor owner and last stop reason. It is off by default and no camera image is saved. The HEVC Vision freshness check now uses live render timestamps rather than the separate 1 FPS Gemini capture ticker. Exposure-to-motion latency and safe physical distance are still unmeasured.
 
 Pure-Java arbitration/telemetry tests and an [Android CI workflow](.github/workflows/android-safety-check.yml) were added. Local device and raised-wheel testing remain mandatory; see [v0.1.23 safety QA](docs/MOTOR_SAFETY_VISION_DEBUG_QA.md).
+
+## v0.1.24 — temporarily hide KL remote vehicle choice
+
+The landscape settings vehicle selector now exposes only **自訂封包** and **WL Tech FPV**. The unverified **KL FPV** selection and its development-only settings copy are hidden, without removing KL protocol scaffolding, stored per-vehicle preferences, or its existing fail-closed protection. When upgrading from a previously saved KL selection, the visible profile defaults to WL Tech; **no car automatically arms or sends a motor command**. Existing WL/custom behavior and all camera, manual-control, AI and Vision modules are unchanged.
+
+To restore KL in a later version, explicitly re-add the choice only after the protocol has been validated. This release does not attempt to activate KL.
