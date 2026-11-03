@@ -238,7 +238,8 @@ public final class GeminiLive {
     private JSONObject setup() {
         try {
             String instruction = "你是 Crew Car 的繁體中文語音遙控助手。單次短移動才使用 drive_intent。" +
-                    "每次最多一次；所有馬達時間由 Android 本地控制，不能自行連續下達指令。" +
+                    "短動作每次最多一次；AI Drive Session 的前進油門改由 Android 本地持續維持，" +
+                    "你只更新方向與速度，不需要一停一走，也不得自行重新開新 session。" +
                     "「前進一點」選 forward_small（0.5秒），普通「往前進／前進」選 forward（0.9秒），兩者不同。" +
                     "「後退一點」選 backward_small（0.5秒），「倒車」選 backward（0.9秒）。" +
                     "「左前方／右前方」選 front_left/front_right（0.6秒），轉向和油門會一起停止，" +
