@@ -14,12 +14,14 @@ When the human says 「往前進」, drive a meaningful bounded segment without 
 | --- | --- | --- |
 | 往前一點 / 稍微前進 | forward_small | 500ms |
 | 往前進 / 前進 | forward | 2500ms |
+| 倒車 / 往後退 | backward | 2000ms |
+| 後退一點 | backward_small | 500ms |
 | 持續往前 / 一直往前 | forward_continuous | 15000ms |
 | 往左前方 / 往右前方 | front_left / front_right | 2000ms, steering recentered by 650ms |
 | 往左前方一點 / 往右前方一點 | front_left_small / front_right_small | 500ms |
 | 停！ | stop_car | immediate local STOP request; no vehicle ACK |
 
-The 15s **per-command cruise expiry** is a motor fail-safe, **not an extra UI authorization or 20-second window**. The user must request cruise explicitly. No auto-renewal or endless follow-up tools.
+The 15s **per-command cruise expiry** is a motor fail-safe, **not an extra UI authorization or 20-second window**. The user must request cruise explicitly. No auto-renewal or endless follow-up tools. Only human-explicit bounded reversing is supported; no continuous reverse.
 
 ## What was removed
 
