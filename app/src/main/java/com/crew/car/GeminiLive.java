@@ -40,6 +40,7 @@ public final class GeminiLive {
         void onStatus(String value);
         String onDrive(String direction, int milliseconds);
         String onDriveIntent(String intent);
+        String onGuideTowardPerson(String bearing);
         String onAlignSelectedPerson();
         String onDriveState(String steering, String throttle, int leaseMs);
         String onSteer(String direction, int holdMs);
@@ -239,14 +240,20 @@ public final class GeminiLive {
                     "「後退一點」選 backward_small（0.5秒），「倒車」選 backward（0.9秒）。" +
                     "「左前方／右前方」選 front_left/front_right（0.6秒），轉向和油門會一起停止，" +
                     "沒有轉向完畢後繼續直行的尾段；加「一點」才選 _small（0.5秒）。" +
-                    "目前禁止「持續前進／一直前進／直到抵達」等開迴路長行駛；應清楚告知暫停支援，" +
-                    "不得偷偷替換成別的移動意圖或重複短動作。" +
-                    "鏡頭沒有可靠距離或障礙物感測，車輛沒有軌跡校正、避障、車端ACK，" +
+                    "使用者明確說「持續前進／一直前進」才選 forward_continuous，" +
+                    "Android 最多持續 2 秒且要求影像排入傳送保持新鮮；到期自動停，不會自動重啟。" +
+                    "如果要求一直開到抵達、無限前進或自動巡航，說明尚未支援，不可連鎖工具。" +
+                    "鏡頭沒有可靠距離或障礙物感測，車輛沒有可驗證的安全距離、避障、車端ACK，" +
                     "即使影像新鮮也不能保證安全；靠近牆壁或障礙物時請停止移動。" +
                     "仍須人類在 App 解鎖與現場監督，使用者說停立刻 stop_car、說鎖車立刻 lock_car。" +
                     "不需額外 8／20 秒授權；工具 queued 不能當作車輛已經移動。" +
                     "若不確定方向先詢問；不自行猜測位置、距離、目標是否抵達。" +
-                    "使用者說「看著那個人／對準前面那個人」時，僅在 App 已由人類點選人物框後才可呼叫 align_selected_person。" +
+                    "使用者說「朝著那個人走／往前面的人方向走」，優先使用 guide_toward_person：" +
+                    "依你真正可見的近期車頭 FPV 畫面判斷單一人物在左、中、右。" +
+                    "這個工具不依賴 Android MediaPipe 人框，不用人先點框，但只能移動一次0.5秒。" +
+                    "若看不到、畫面不明、多個人物、不確定，請回報 bearing=unknown 或問人類，不能憑空猜。" +
+                    "不可自行重複呼叫或宣稱跟隨中，下一次動作需要新的使用者明確要求。" +
+                    "使用者說「對準已點選人物」，才使用 align_selected_person，需要人類先點框。" +
                     "這不是自動跟隨或避障；最多三次160毫秒小幅前進加轉向，每次都先停車再看新畫面；可能向前位移。" +
                     "不能自行選擇人物或連續重新開始對準，請求若被拒絕則請人類點選框並在開闊地方測試。";
             return new JSONObject().put("setup", new JSONObject()
@@ -420,6 +427,7 @@ public final class GeminiLive {
                         if (safetyOverride && ("drive_car".equals(name) ||
                                 "set_drive_state".equals(name) || "steer_car".equals(name) ||
                                 "drive_intent".equals(name) ||
+                                "guide_toward_person".equals(name) ||
                                 "align_selected_person".equals(name))) {
                             result = toolStatus("blocked", "STOP/lock in same tool batch takes priority");
                         } else {
@@ -444,6 +452,11 @@ public final class GeminiLive {
                     String chosen = toolArgs == null ? "" : toolArgs.optString("intent", "");
                     intentSummary = " selectedIntent=" +
                             (DriveIntentPolicy.plan(chosen) == null ? "invalid" : chosen);
+                } else if ("guide_toward_person".equals(name)) {
+                    JSONObject toolArgs = call.optJSONObject("args");
+                    String bearing = toolArgs == null ? "" : toolArgs.optString("bearing", "");
+                    intentSummary = " personBearing=" +
+                            (PersonBearingPolicy.intentFor(bearing) == null ? "unknown" : bearing);
                 }
                 log.i("TOOL", "name=" + name + intentSummary + " status=" + state +
                         " replay=" + replay + " durationMs=" + (SystemClock.elapsedRealtime() - started) +
@@ -500,6 +513,26 @@ public final class GeminiLive {
                         .put("extra_authorization_required", false)
                         .put("manually_armed_required", true)
                         .put("distance_measured", false)
+                        .put("obstacle_clearance_verified", false)
+                        .put("device_acknowledged", false)
+                        .put("motion_verified", false);
+            }
+            case "guide_toward_person": {
+                String bearing = args == null ? "" : args.optString("bearing", "");
+                String violation = CarToolPolicy.validatePersonBearing(bearing);
+                if (violation != null)
+                    return toolStatus("blocked", violation)
+                            .put("bearings_available", "left,center,right,unknown")
+                            .put("obstacle_clearance_verified", false);
+                String result = listener.onGuideTowardPerson(bearing);
+                boolean blocked = result == null || result.startsWith("blocked");
+                return toolStatus(blocked ? "blocked" : "queued",
+                        result == null ? "no result" : result)
+                        .put("person_bearing", bearing)
+                        .put("local_lease_ms", DriveIntentPolicy.NUDGE_MS)
+                        .put("one_step_only", true)
+                        .put("human_reinstruction_required", true)
+                        .put("recent_video_queued_required", true)
                         .put("obstacle_clearance_verified", false)
                         .put("device_acknowledged", false)
                         .put("motion_verified", false);
