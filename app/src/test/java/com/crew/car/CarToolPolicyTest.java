@@ -23,7 +23,9 @@ public final class CarToolPolicyTest {
         assertNull(CarToolPolicy.validateDriveIntent("forward_continuous"));
         assertNull(CarToolPolicy.validateDriveIntent("front_left"));
         assertNull(CarToolPolicy.validateDriveIntent("front_right"));
-        assertNotNull(CarToolPolicy.validateDriveIntent("backward"));
+        assertNull(CarToolPolicy.validateDriveIntent("backward"));
+        assertNull(CarToolPolicy.validateDriveIntent("backward_small"));
+        assertNotNull(CarToolPolicy.validateDriveIntent("backward_continuous"));
         assertNotNull(CarToolPolicy.validateDriveIntent("left"));
         assertNotNull(CarToolPolicy.validateDriveIntent(null));
         assertFalse(CarToolPolicy.isSupported("approach_target"));
