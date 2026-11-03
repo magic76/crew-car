@@ -1390,7 +1390,7 @@ public final class MainActivity extends Activity {
     private void updateApproachButton() {
         if (approachButton == null || control == null) return;
         boolean active = control.approachPulseActive() || control.approachAuthorized();
-        approachButton.setText(active ? "取消導向" : "導向");
+        approachButton.setText(active ? "導向 ON" : "導向");
         approachButton.setTextSize(11);
         approachButton.setContentDescription(active ?
                 "取消 AI 導向授權並停止上鎖" : "授權 AI 朝明確指定方向短距離前進");
@@ -1418,7 +1418,7 @@ public final class MainActivity extends Activity {
         new AlertDialog.Builder(this)
                 .setTitle("啟用 AI 目標導向（短移實驗）")
                 .setMessage("目前不能可靠辨識目標距離或障礙物。請先架空車輪；" +
-                        "實地只能在無人車、空曠且可立即斷電的私人場地監督使用。\\n\\n" +
+                        "實地只能在無人車、空曠且可立即斷電的私人場地監督使用。\n\n" +
                         "授權 20 秒內最多 3 次短移，每次 150～600ms。每次都需你明確" +
                         "指定左前、正前或右前方向，AI 不得自行連續前進或繞圈；" +
                         "沒有明確方向時必須詢問。任何 STOP、手動接管或離開畫面都會取消授權。")
