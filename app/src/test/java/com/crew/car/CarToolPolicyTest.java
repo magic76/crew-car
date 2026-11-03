@@ -5,7 +5,8 @@ import static org.junit.Assert.*;
 
 public final class CarToolPolicyTest {
     @Test public void knownTools() {
-        for (String name : new String[]{"drive_intent","guide_toward_person","align_selected_person",
+        for (String name : new String[]{"start_ai_drive_session","adjust_ai_drive_session",
+                "drive_intent","guide_toward_person","align_selected_person",
                 "stop_car","lock_car",
                 "get_car_status","get_camera_status","get_network_status"}) {
             assertTrue(name, CarToolPolicy.isSupported(name));
@@ -19,6 +20,7 @@ public final class CarToolPolicyTest {
         assertNotNull(CarToolPolicy.validatePersonBearing("backward"));
         assertFalse(CarToolPolicy.isSupported("unlock_car"));
         assertFalse(CarToolPolicy.isSupported("drive_sequence"));
+        assertFalse(CarToolPolicy.isSupported("auto_restart_drive_session"));
         assertFalse(CarToolPolicy.isSupported("drive_car"));
         assertFalse(CarToolPolicy.isSupported("set_drive_state"));
         assertFalse(CarToolPolicy.isSupported("steer_car"));

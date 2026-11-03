@@ -41,7 +41,6 @@ public final class GeminiCarTools {
                                 .put("enum", new JSONArray()
                                         .put("forward_small")
                                         .put("forward")
-                                        .put("forward_continuous")
                                         .put("backward_small")
                                         .put("backward")
                                         .put("front_left_small")
@@ -72,8 +71,40 @@ public final class GeminiCarTools {
                                         "Person location in current front-facing FPV image, not a distance")))
                 .put("required", new JSONArray().put("bearing"));
 
+        JSONObject adjust = action("adjust_ai_drive_session",
+                "Use DURING an active Android-owned AI Drive Session ONLY, with the EXACT " +
+                "session_id from start_ai_drive_session response or current status. " +
+                "Gemini reviews recent FPV image to change steering and/or relative throttle gain " +
+                "independently. steering = left/right/center/keep; left/right is a SHORT 900ms " +
+                "correction that auto-centers, while FORWARD THROTTLE KEEPS GOING. " +
+                "speed = slow/normal/fast/keep (bounded 50/65/80% OEM gain, NOT km/h). " +
+                "If unsafe, unclear obstacles, or person too close, call stop_car instead. " +
+                "Never extend or auto-restart a finished session; no measured depth or ACK.");
+        adjust.getJSONObject("parameters")
+                .put("properties", new JSONObject()
+                        .put("session_id", new JSONObject().put("type", "INTEGER")
+                                .put("description", "Exact integer session id from start response"))
+                        .put("steering", new JSONObject().put("type", "STRING")
+                                .put("enum", new JSONArray().put("left").put("right")
+                                        .put("center").put("keep")))
+                        .put("speed", new JSONObject().put("type", "STRING")
+                                .put("enum", new JSONArray().put("slow").put("normal")
+                                        .put("fast").put("keep"))))
+                .put("required", new JSONArray().put("session_id")
+                        .put("steering").put("speed"));
+
         return new JSONArray()
                 .put(intent)
+                .put(action("start_ai_drive_session",
+                        "For explicit human request '持續往前走/開始 AI 駕駛/邊走邊調整方向'. " +
+                        "Human MUST manually arm car; start from stationary WL car in open area, " +
+                        "with fresh FPV/Gemini video. Android sends slow forward throttle CONTINUOUSLY " +
+                        "while session active, capped at 30 seconds, also stops on stale video, " +
+                        "no Gemini speed/steering updates for 8.5s, manual control or STOP. " +
+                        "Return session_id for subsequent adjust_ai_drive_session. " +
+                        "This is NOT guaranteed obstacle avoidance or autonomous navigation. " +
+                        "Never start a second session automatically."))
+                .put(adjust)
                 .put(bearing)
                 .put(action("align_selected_person",
                         "Only for explicit request '看著那個人/對準那個人' after a human manually " +

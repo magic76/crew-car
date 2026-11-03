@@ -68,10 +68,39 @@ public final class MainActivity extends Activity {
     private long followLastLogAt;
     private Button quickTalkButton, interruptButton;
     private TextView aiDriveStatus;
+    private long lastAiDriveReviewSessionId;
+    private long lastAiDriveReviewPromptAt;
     private boolean autoStartMicOnReady;
     private final Runnable aiDriveTicker = new Runnable() {
         @Override public void run() {
             if (!foreground) return;
+            // Android requests new visual steering advice while local throttle is
+            // maintained by the motor ticker; no cloud tool loop owns motor timing.
+            if (control.aiDriveSessionActive()) {
+                long now = SystemClock.elapsedRealtime();
+                long sessionId = control.aiDriveSessionId();
+                if (sessionId != lastAiDriveReviewSessionId) {
+                    lastAiDriveReviewSessionId = sessionId;
+                    lastAiDriveReviewPromptAt = now;
+                } else if (now - lastAiDriveReviewPromptAt >=
+                        AiDriveSessionPolicy.VIDEO_REVIEW_INTERVAL_MS &&
+                        gemini.ready() && !gemini.assistantSpeaking() &&
+                        gemini.liveVideoAgeMs() >= 0 && gemini.liveVideoAgeMs() <= 1500 &&
+                        cameraAgeMs() >= 0 && cameraAgeMs() <= 1500) {
+                    lastAiDriveReviewPromptAt = now;
+                    String review = "Crew Car Android 本地 AI Drive Session id=" + sessionId +
+                            " 仍在行駛。請只根據你近期確實看見的車頭 FPV 影像，" +
+                            "決定一次 adjust_ai_drive_session，帶相同 session_id。" +
+                            " steering 用 left/right/center/keep，speed 用 slow/normal/fast/keep。" +
+                            "方向修正會在900ms後回正，但前進油門不中斷；不要重新啟動 session。" +
+                            "若影像不明、前方不確定或可能撞人/物，請呼叫 stop_car。" +
+                            " 沒有測距或避障能力，不可宣稱前方安全。不要長篇語音回答。";
+                    if (gemini.sendText(review)) {
+                        log.i("AI_SESSION", "requested periodic visual steering review id=" +
+                                sessionId + " (not model acknowledgement)");
+                    } else log.e("AI_SESSION", "visual steering review text not queued");
+                }
+            }
             if (visionAlign.active()) {
                 VisionAlignPlanner.Decision step = visionAlign.tick(
                         SystemClock.elapsedRealtime(),
@@ -89,6 +118,12 @@ public final class MainActivity extends Activity {
                             "/3｜短動作後重新觀察");
                 else if (control.visionFollowActive())
                     aiDriveStatus.setText("跟隨人物中 · 最多 8 秒 · 可按急停");
+                else if (control.aiDriveSessionActive())
+                    aiDriveStatus.setText("AI 駕駛：前進 " + control.aiDriveSpeedGain() +
+                            "% 增益｜方向 " +
+                            (control.aiSteering() < 0 ? "左" :
+                             control.aiSteering() > 0 ? "右" : "回正") +
+                            "｜剩餘 " + control.aiLeaseRemainingMs() + "ms");
                 else if (control.aiHoldActive())
                     aiDriveStatus.setText("AI 保持中：油門 " +
                             (control.aiThrottle() > 0 ? "前進" :
@@ -839,8 +874,9 @@ public final class MainActivity extends Activity {
             }
             updateLockButton();
         });
-        label(root, "手動搖桿按住可持續控制；語音「持續前進」每次最多 2 秒，必須有新鮮車頭畫面且到期停止。" +
-                " Gemini 看畫面選左／中／右時只走 0.5 秒，無測距、避障或車端 ACK。", 12);
+        label(root, "手動搖桿按住可持續控制；語音「開始 AI 駕駛／持續前進」由 Android 持續送前進油門。" +
+                " Gemini 可以在駕駛中改左／右／回正與速度（50／65／80% 原廠增益），不是量測車速。" +
+                " 最多30秒，影像／Live失效、控制更新逾時、手動接管或急停都會停止。無避障或車端 ACK。", 12);
 
         // The technical tuning indicator belongs in Control settings, not
         // a permanent bar below the FPV feed.
@@ -878,9 +914,10 @@ public final class MainActivity extends Activity {
             if (!gemini.sendText(prompt.getText().toString())) log.e("LIVE", "請先連線 Gemini");
             else log.i("LIVE", "text turn sent (content redacted)");
         }), new LinearLayout.LayoutParams(-1, dp(50)));
-        label(root, "語音「持續前進」一次最多 2 秒並到期停止；說「朝著前面的人走」讓 Gemini" +
-                " 從新鮮 FPV 判斷左、中、右，只走 0.5 秒，不依賴本地人物辨識框。" +
-                " 不支援自行連續跟隨，也沒有測距／避障；請在空曠地測試。", 12);
+        label(root, "語音「持續前進／開始 AI 駕駛」：油門由本地持續送出，Gemini 每3秒左右" +
+                " 根據新影像修正方向與相對油門增益。一次最多30秒，AI 工具回覆不能延長時間。" +
+                " 單次「朝人走一步」仍支援 0.5 秒，不依賴本地人物框。" +
+                " 無深度感測、可靠避障或車端 ACK；只能在清空障礙的場地實測。", 12);
         root.addView(button("讓 Gemini 看人物方向並走一步（最多 0.5 秒）", v -> {
             if (!gemini.sendText("這是使用者明確要求：請觀察你近期實際看見的車頭 FPV 畫面。" +
                     " 若清楚只有一個人物，呼叫 guide_toward_person 選 left/center/right；" +
@@ -1659,6 +1696,25 @@ public final class MainActivity extends Activity {
             @Override public void onSpeechState(boolean speaking) {
                 runOnUiThread(() -> updateTalkButtons());
             }
+            @Override public String onStartAiDriveSession() {
+                if (visionAlign.active())
+                    return "blocked: local person alignment already running";
+                if (!foreground || !drivingMode || !gemini.ready() ||
+                        activeProfile != CarProfile.WL_TECH || routes.wifi() == null ||
+                        !control.armed())
+                    return "blocked: Gemini/WL Wi-Fi/foreground and human manual unlock required";
+                return control.startAiDriveSession();
+            }
+            @Override public String onAdjustAiDriveSession(long id, String steering, String speed) {
+                if (visionAlign.active() || !foreground || !drivingMode ||
+                        activeProfile != CarProfile.WL_TECH || !gemini.ready() ||
+                        routes.wifi() == null || !control.armed())
+                    return "blocked: Gemini/WL Wi-Fi/foreground and arm gate";
+                return control.adjustAiDrive(id, steering, speed);
+            }
+            @Override public long currentAiDriveSessionId() {
+                return control.aiDriveSessionId();
+            }
             @Override public String onDriveIntent(String intent) {
                 if (visionAlign.active())
                     return "blocked: local person alignment owns session; use stop_car first";
@@ -1749,6 +1805,13 @@ public final class MainActivity extends Activity {
                         "stop_burst_attempts", control.stopBurstAttempts(),
                         "pulse_remaining_ms", control.remainingMs(),
                         "ai_hold_active", control.aiHoldActive(),
+                        "ai_drive_session_active", control.aiDriveSessionActive(),
+                        "ai_drive_session_id", control.aiDriveSessionId(),
+                        "ai_drive_speed_gain_percent", control.aiDriveSpeedGain(),
+                        "ai_drive_update_age_ms", control.aiDriveLastControlAgeMs(),
+                        "ai_drive_session_max_ms", AiDriveSessionPolicy.MAX_SESSION_MS,
+                        "ai_drive_control_silence_stop_ms", AiDriveSessionPolicy.STALE_CONTROL_MS,
+                        "ai_drive_direction_recenter_ms", AiDriveSessionPolicy.STEERING_HOLD_MS,
                         "ai_steering", control.aiSteering(),
                         "ai_throttle", control.aiThrottle(),
                         "ai_lease_remaining_ms", control.aiLeaseRemainingMs(),

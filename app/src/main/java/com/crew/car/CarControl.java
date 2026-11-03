@@ -50,6 +50,11 @@ public final class CarControl {
     private volatile BooleanSupplier aiSafetyGate = () -> false;
     private volatile BooleanSupplier aiVideoGate = () -> false;
     private volatile boolean aiVideoGuarded;
+    /** Session ownership persists while steering changes; throttle never toggles to STOP on a turn. */
+    private volatile boolean aiDriveSessionPending, aiDriveSessionActive;
+    private volatile long aiDriveSessionId, aiDriveSessionStartedAt, aiDriveSessionLastControlAt;
+    private volatile int aiDriveSpeedGain = AiDriveSessionPolicy.SLOW_GAIN;
+    private long aiDriveSessionSequence;
     private volatile long lastAiSafetyCheckAt;
     private final AtomicLong motionEpoch = new AtomicLong();
     private volatile String lastTxCommand = "none";
@@ -95,6 +100,12 @@ public final class CarControl {
             }
             if (aiHoldActive && armed) {
                 long now = SystemClock.elapsedRealtime();
+                if (aiDriveSessionActive && AiDriveSessionPolicy.shouldStop(now,
+                        aiDriveSessionStartedAt, aiDriveSessionLastControlAt)) {
+                    stopInternal(AiDriveSessionPolicy.stopReason(now,
+                            aiDriveSessionStartedAt, aiDriveSessionLastControlAt));
+                    return;
+                }
                 // Expiry has priority over re-centering: never send a final
                 // straight-throttle packet when a diagonal lease has ended.
                 if (DriveIntentPolicy.mustStopBothAxes(now, deadline,
@@ -107,9 +118,11 @@ public final class CarControl {
                 if (aiSteerReleaseAt > 0 && now >= aiSteerReleaseAt) {
                     aiSteerReleaseAt = 0;
                     aiStopWithSteering = false;
-        aiVideoGuarded = false;
+                    // Recenter steering but KEEP video watchdog and forward throttle.
                     aiSteer = 0;
-                    String command = "axes:0:" + aiThrottle;
+                    String command = aiDriveSessionActive ?
+                            "ai-session:0:1:" + aiDriveSpeedGain :
+                            "axes:0:" + aiThrottle;
                     if (!command.equals(active)) {
                         active = command;
                         sendInternal(command);
@@ -183,7 +196,8 @@ public final class CarControl {
     public boolean armed() { return armed; }
     public boolean manual() { return manual; }
     public void setManual(boolean value) {
-        if (value && (aiHoldActive || visionFollowActive)) emergencyStop();
+        if (value && (aiHoldActive || aiDriveSessionPending || visionFollowActive))
+            emergencyStop("manual takeover");
         manual = value;
     }
     public void setAiSafetyGate(BooleanSupplier gate) {
@@ -201,6 +215,21 @@ public final class CarControl {
         visionSafetyGate = gate == null ? () -> false : gate;
     }
     public boolean aiHoldActive() { return aiHoldActive && armed && deadline > SystemClock.elapsedRealtime(); }
+    public boolean aiDriveSessionActive() {
+        return aiDriveSessionActive && aiHoldActive() && !manual;
+    }
+    public long aiDriveSessionId() {
+        return aiDriveSessionActive || aiDriveSessionPending ? aiDriveSessionId : 0;
+    }
+    /** Actual requested packet gain after the user's manual tuning ceiling. */
+    public int aiDriveSpeedGain() {
+        return aiDriveSessionActive() ?
+                Math.min(aiDriveSpeedGain, config.tuning.throttlePercent) : 0;
+    }
+    public long aiDriveLastControlAgeMs() {
+        return !aiDriveSessionActive() ? -1 :
+                Math.max(0L, SystemClock.elapsedRealtime() - aiDriveSessionLastControlAt);
+    }
     public int aiSteering() { return aiHoldActive() ? aiSteer : 0; }
     public int aiThrottle() { return aiHoldActive() ? aiThrottle : 0; }
     public long aiLeaseRemainingMs() {
@@ -235,6 +264,8 @@ public final class CarControl {
         if (next.carProfile == CarProfile.KL_FPV && next.wltoys)
             throw new IllegalArgumentException("Cannot send WL commands to KL");
         motionEpoch.incrementAndGet();
+        aiDriveSessionPending = false;
+        aiDriveSessionActive = false;
         aiHoldActive = false;
         visionFollowActive = false;
         visionFollowLimitAt = 0;
@@ -285,6 +316,8 @@ public final class CarControl {
     }
 
     public void disarm() {
+        aiDriveSessionPending = false;
+        aiDriveSessionActive = false;
         visionFollowActive = false;
         aiHoldActive = false;
         aiSteerReleaseAt = 0;
@@ -359,6 +392,8 @@ public final class CarControl {
         if (!armed) return "blocked: control locked";
         if (manual) return "blocked: manual priority";
         if (visionFollowActive) return "blocked: visual follow owns controls";
+        if (aiDriveSessionPending || aiDriveSessionActive)
+            return "blocked: AI session owns throttle; use adjust_ai_drive";
         if (!MotorAuthorityPolicy.canClaim(owner(), MotorAuthorityPolicy.Owner.GEMINI) &&
                 !MotorAuthorityPolicy.canUpdate(owner(), MotorAuthorityPolicy.Owner.GEMINI))
             return "blocked: motor authority unavailable";
@@ -476,6 +511,126 @@ public final class CarControl {
      */
     public synchronized String driveIntent(String intent) {
         return driveIntentInternal(intent, "forward_continuous".equals(intent));
+    }
+
+    /**
+     * One explicit user command starts a bounded Android-owned motor session.
+     * Gemini may adjust its heading/speed; it cannot extend the absolute deadline.
+     * All motor packets still originate on the serial I/O executor.
+     */
+    public synchronized String startAiDriveSession() {
+        if (!armed || manual || visionFollowActive || aiHoldActive ||
+                aiDriveSessionPending || aiDriveSessionActive || !"stop".equals(active) ||
+                !config.wltoys ||
+                !MotorAuthorityPolicy.canClaim(owner(), MotorAuthorityPolicy.Owner.GEMINI))
+            return "blocked: stationary WL car, human arm and exclusive motor ownership required";
+        boolean safe;
+        try { safe = aiSafetyGate.getAsBoolean() && aiVideoGate.getAsBoolean(); }
+        catch (Exception ex) { safe = false; }
+        if (!safe) return "blocked: foreground Live/Wi-Fi/FPV video not fresh";
+        final long epoch = motionEpoch.get();
+        final long queuedAt = SystemClock.elapsedRealtime();
+        final long sessionId = ++aiDriveSessionSequence;
+        aiDriveSessionPending = true;
+        aiDriveSessionId = sessionId; // expose the queued id so Gemini can echo it
+        io.execute(() -> {
+            long now = SystemClock.elapsedRealtime();
+            if (epoch != motionEpoch.get() || !aiDriveSessionPending ||
+                    !armed || manual || visionFollowActive || aiHoldActive ||
+                    !"stop".equals(active) || now - queuedAt > 500) {
+                if (epoch == motionEpoch.get()) {
+                    aiDriveSessionPending = false;
+                    aiDriveSessionId = 0;
+                }
+                log.i("AI_SESSION", "stale or competing session start discarded");
+                return;
+            }
+            boolean stillSafe;
+            try { stillSafe = aiSafetyGate.getAsBoolean() && aiVideoGate.getAsBoolean(); }
+            catch (Exception ex) { stillSafe = false; }
+            if (!stillSafe) {
+                armed = false;
+                stopInternal("AI session startup video or Live gate stale");
+                return;
+            }
+            aiDriveSessionPending = false;
+            aiDriveSessionActive = true;
+            aiDriveSessionId = sessionId;
+            aiDriveSessionStartedAt = now;
+            aiDriveSessionLastControlAt = now;
+            aiDriveSpeedGain = AiDriveSessionPolicy.SLOW_GAIN;
+            aiSteer = 0;
+            aiThrottle = 1;
+            aiSteerReleaseAt = 0;
+            aiStopWithSteering = false;
+            aiVideoGuarded = true;
+            aiHoldActive = true;
+            deadline = now + AiDriveSessionPolicy.MAX_SESSION_MS;
+            active = "ai-session:0:1:" + aiDriveSpeedGain;
+            sendInternal(active);
+            log.i("AI_SESSION", "start sessionId=" + sessionId +
+                    " gain=" + aiDriveSpeedGain +
+                    " maxMs=" + AiDriveSessionPolicy.MAX_SESSION_MS +
+                    " video watchdog on, motor unacknowledged");
+        });
+        return "queued AI Drive Session id=" + sessionId +
+                ", initial slow forward, capped at " + AiDriveSessionPolicy.MAX_SESSION_MS +
+                "ms; no device ACK";
+    }
+
+    /**
+     * Steering and throttle gain are INDEPENDENT. Turn correction expires to
+     * center without stopping the forward throttle. No session extension.
+     */
+    public synchronized String adjustAiDrive(long sessionId, String steering, String pace) {
+        if (!AiDriveSessionPolicy.validSteering(steering) ||
+                !AiDriveSessionPolicy.validSpeed(pace))
+            return "blocked: steering left/center/right/keep; speed slow/normal/fast/keep";
+        if (!aiDriveSessionPending && !aiDriveSessionActive)
+            return "blocked: no active AI Drive Session";
+        if (sessionId <= 0 || sessionId != aiDriveSessionId)
+            return "blocked: stale or incorrect AI session id";
+        if (!armed || manual || visionFollowActive)
+            return "blocked: human lock or competing motor owner";
+        boolean safe;
+        try { safe = aiSafetyGate.getAsBoolean() && aiVideoGate.getAsBoolean(); }
+        catch (Exception ex) { safe = false; }
+        if (!safe) return "blocked: Live/FPV video stale, cannot adjust";
+        final long epoch = motionEpoch.get();
+        final long queuedAt = SystemClock.elapsedRealtime();
+        io.execute(() -> {
+            long now = SystemClock.elapsedRealtime();
+            if (epoch != motionEpoch.get() || !aiDriveSessionActive || !armed || manual ||
+                    !aiHoldActive || now >= deadline ||
+                    now - queuedAt > 500 || sessionId != aiDriveSessionId ||
+                    AiDriveSessionPolicy.shouldStop(now, aiDriveSessionStartedAt,
+                            aiDriveSessionLastControlAt)) return;
+            boolean stillSafe;
+            try { stillSafe = aiSafetyGate.getAsBoolean() && aiVideoGate.getAsBoolean(); }
+            catch (Exception ex) { stillSafe = false; }
+            if (!stillSafe) {
+                armed = false;
+                stopInternal("AI session update video or Live gate stale");
+                return;
+            }
+            aiSteer = AiDriveSessionPolicy.steering(steering, aiSteer);
+            aiDriveSpeedGain = AiDriveSessionPolicy.speedGain(pace, aiDriveSpeedGain);
+            if (!"keep".equals(steering)) {
+                aiSteerReleaseAt = aiSteer == 0 ? 0 :
+                        now + AiDriveSessionPolicy.STEERING_HOLD_MS;
+            }
+            aiDriveSessionLastControlAt = now;
+            String command = "ai-session:" + aiSteer + ":1:" + aiDriveSpeedGain;
+            if (!command.equals(active)) {
+                active = command;
+                sendInternal(command);
+            }
+            log.i("AI_SESSION", "update id=" + sessionId +
+                    " steering=" + steering + " speed=" + pace +
+                    " gain=" + aiDriveSpeedGain + " leaseRemainingMs=" +
+                    Math.max(0, deadline - now) + " no car ACK");
+        });
+        return "queued independent steering/speed update, session deadline unchanged (no car ACK)";
     }
 
     /** One 500ms step from a Gemini-proposed person bearing; no autonomous chaining. */
@@ -673,6 +828,10 @@ public final class CarControl {
         aiStopWithSteering = false;
         aiVideoGuarded = false;
         aiHoldActive = false;
+        aiDriveSessionPending = false;
+        aiDriveSessionActive = false;
+        aiDriveSessionId = 0;
+        aiDriveSpeedGain = AiDriveSessionPolicy.SLOW_GAIN;
         aiSteer = 0;
         aiThrottle = 0;
         motionEpoch.incrementAndGet();
@@ -704,6 +863,10 @@ public final class CarControl {
         aiStopWithSteering = false;
         aiVideoGuarded = false;
         aiHoldActive = false;
+        aiDriveSessionPending = false;
+        aiDriveSessionActive = false;
+        aiDriveSessionId = 0;
+        aiDriveSpeedGain = AiDriveSessionPolicy.SLOW_GAIN;
         aiSteer = 0;
         aiThrottle = 0;
         active = "stop";
@@ -747,6 +910,21 @@ public final class CarControl {
                 CarTuning reduced = new CarTuning(c.tuning.intervalMs, 50, 50);
                 bytes = WltoysProtocol.control(Integer.parseInt(axes[1]),
                         Integer.parseInt(axes[2]), reduced);
+            } else if (c.wltoys && direction.startsWith("ai-session:")) {
+                String[] axes = direction.split(":");
+                if (axes.length != 4) throw new IllegalArgumentException("bad AI session command");
+                int steer = Integer.parseInt(axes[1]);
+                int throttle = Integer.parseInt(axes[2]);
+                int gain = Integer.parseInt(axes[3]);
+                if (throttle != 1 ||
+                        (gain != AiDriveSessionPolicy.SLOW_GAIN &&
+                         gain != AiDriveSessionPolicy.NORMAL_GAIN &&
+                         gain != AiDriveSessionPolicy.FAST_GAIN))
+                    throw new IllegalArgumentException("invalid AI drive packet gain/throttle");
+                CarTuning limited = new CarTuning(c.tuning.intervalMs,
+                        Math.min(c.tuning.steeringPercent, 65),
+                        Math.min(c.tuning.throttlePercent, gain));
+                bytes = WltoysProtocol.control(steer, throttle, limited);
             } else if (c.wltoys && direction.startsWith("axes:")) {
                 String[] axes = direction.split(":");
                 if (axes.length != 3) throw new IllegalArgumentException("bad axis command");
