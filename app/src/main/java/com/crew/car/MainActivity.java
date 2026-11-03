@@ -62,6 +62,9 @@ public final class MainActivity extends Activity {
     private Button visionButton, alignButton, lockButton;
     private volatile boolean visionEnabled;
     private final VisionAlignPlanner visionAlign = new VisionAlignPlanner();
+    /** A fresh HUMAN box-tap is required for every alignment session. */
+    private volatile long visionSelectionEpoch;
+    private volatile long visionLastAlignmentSelectionEpoch;
     private long followLastLogAt;
     private Button quickTalkButton, interruptButton;
     private TextView aiDriveStatus;
@@ -445,7 +448,7 @@ public final class MainActivity extends Activity {
             }
         });
         alignButton.setTextSize(12);
-        alignButton.setContentDescription("對準已點選人物，最多三次160毫秒前進加轉向；非避障，可再次按下取消");
+        alignButton.setContentDescription("需先點選人物；對準最多三次160毫秒前進加轉向；非避障，可再次按下取消");
         topRow.addView(alignButton, new LinearLayout.LayoutParams(dp(70), dp(38)));
         Button controlLayoutButton = button("操控", v -> openControlLayoutDialog());
         topRow.addView(controlLayoutButton, new LinearLayout.LayoutParams(dp(60), dp(38)));
@@ -494,6 +497,7 @@ public final class MainActivity extends Activity {
         hevcPreview = new TextureView(this);
         cameraFrame.addView(hevcPreview, new FrameLayout.LayoutParams(-1, -1));
         visionOverlay = new VisionOverlay(this, selected -> {
+            if (selected) visionSelectionEpoch++;
             stopVisionAlignment("人物選擇已變更");
             if (control.visionFollowActive()) control.stopVisionFollow();
             log.i("VISION", "person target selected manually; previous follow cancelled");
@@ -1447,8 +1451,10 @@ public final class MainActivity extends Activity {
                 age >= 0 && age <= 650 && routes.wifi() != null;
     }
 
-    private String startVisionAlignment() {
+    private synchronized String startVisionAlignment() {
         if (visionAlign.active()) return "blocked: alignment already running";
+        if (visionSelectionEpoch == visionLastAlignmentSelectionEpoch)
+            return "blocked: 每次對準前請在鏡頭重新點選人物，AI 不可自行連續重啟";
         if (!visionAlignReady() || !control.armed() ||
                 control.owner() != MotorAuthorityPolicy.Owner.IDLE ||
                 !"stop".equals(control.activeCommand()))
@@ -1458,6 +1464,7 @@ public final class MainActivity extends Activity {
         if (frame <= 0 || now - frame > 300 ||
                 visionOverlay.selectedTarget().score < .67f)
             return "blocked: 請先點選近期畫面中的清楚人物";
+        visionLastAlignmentSelectionEpoch = visionSelectionEpoch;
         visionAlign.start(now, frame);
         runOnUiThread(this::updateAlignButton);
         log.i("ALIGN", "session began; selected person only, max 3 x 160ms forward-steer pulses; no depth");
@@ -1477,7 +1484,7 @@ public final class MainActivity extends Activity {
         alignButton.setText(visionAlign.active() ? "取消對準" : "對準人");
         alignButton.setContentDescription(visionAlign.active() ?
                 "取消人像方向校正並停止馬達" :
-                "對準已選人物，最多三次160毫秒短暫前進加轉向，不會避障");
+                "重新點選人物後可開始三次160毫秒短暫前進加轉向，不會避障");
     }
 
     /** Local rendered-image / screen-capture recency; not sensor exposure latency. */
