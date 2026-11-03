@@ -18,7 +18,12 @@ public final class CarToolPolicy {
         return "drive_car".equals(name) || "stop_car".equals(name) ||
                 "lock_car".equals(name) || "get_car_status".equals(name) ||
                 "get_camera_status".equals(name) || "get_network_status".equals(name) ||
-                "set_drive_state".equals(name) || "steer_car".equals(name);
+                "set_drive_state".equals(name) || "steer_car".equals(name) ||
+                "approach_target".equals(name);
+    }
+
+    public static String validateApproach(String bearing, int durationMs) {
+        return TargetApproachPolicy.validate(bearing, durationMs);
     }
 
     public static String validateHold(String steering, String throttle, int leaseMs) {
