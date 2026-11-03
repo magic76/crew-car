@@ -6,12 +6,21 @@ import static org.junit.Assert.*;
 public final class CarToolPolicyTest {
     @Test public void knownTools() {
         for (String name : new String[]{"drive_car","stop_car","lock_car",
-                "get_car_status","get_camera_status","get_network_status"}) {
+                "get_car_status","get_camera_status","get_network_status","approach_target"}) {
             assertTrue(name, CarToolPolicy.isSupported(name));
         }
         assertFalse(CarToolPolicy.isSupported("unlock_car"));
         assertFalse(CarToolPolicy.isSupported("drive_sequence"));
         assertFalse(CarToolPolicy.isSupported(""));
+    }
+
+    @Test public void approachToolRejectsBlindLongOrReverseRequests() {
+        assertNull(CarToolPolicy.validateApproach("front_left",150));
+        assertNull(CarToolPolicy.validateApproach("ahead",600));
+        assertNull(CarToolPolicy.validateApproach("front_right",300));
+        assertNotNull(CarToolPolicy.validateApproach("left",300));
+        assertNotNull(CarToolPolicy.validateApproach("backward",300));
+        assertNotNull(CarToolPolicy.validateApproach("ahead",30000));
     }
 
     @Test public void validBoundaries() {
