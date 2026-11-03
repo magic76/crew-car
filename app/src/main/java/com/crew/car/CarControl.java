@@ -142,7 +142,9 @@ public final class CarControl {
             if (armed && config.wltoys) {
                 if (!"stop".equals(active) &&
                         SystemClock.elapsedRealtime() >= deadline) {
-                    stopInternal("motor deadline reached before transmit");
+                    stopInternal(active.startsWith("vision-align:") ?
+                            "vision align pulse lease expired" :
+                            "motor deadline reached before transmit");
                 } else {
                     sendInternal(active);
                 }
@@ -708,10 +710,9 @@ public final class CarControl {
                     direction.startsWith("vision-align:"))) {
                 String[] axes = direction.split(":");
                 if (axes.length != 3) throw new IllegalArgumentException("bad vision command");
-                // Alignment gets even less drive gain than legacy vision following.
-                // No forward-only commands are ever emitted by the align controller.
-                int gain = direction.startsWith("vision-align:") ? 30 : 50;
-                CarTuning reduced = new CarTuning(c.tuning.intervalMs, gain, gain);
+                // Configurable hardware-safe minimum is 50% of OEM gains.
+                // Alignment is bounded by a very short local motor lease.
+                CarTuning reduced = new CarTuning(c.tuning.intervalMs, 50, 50);
                 bytes = WltoysProtocol.control(Integer.parseInt(axes[1]),
                         Integer.parseInt(axes[2]), reduced);
             } else if (c.wltoys && direction.startsWith("axes:")) {
