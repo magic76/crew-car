@@ -189,7 +189,7 @@ public final class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
-        activeProfile = CarProfile.fromIndex(getPreferences(MODE_PRIVATE)
+        activeProfile = CarProfile.visibleFromIndex(getPreferences(MODE_PRIVATE)
                 .getInt("protocol_profile", 1));
         log = new CarLog();
         routes = new CarNetwork(this, log);
@@ -602,7 +602,7 @@ public final class MainActivity extends Activity {
                 }));
 
         settingsCuts[0] = root.getChildCount(); // vehicle intro / Wi-Fi actions
-        label(root, "1. FPV 攝影機（KL 影像協定待驗證）", 17).setTypeface(null, Typeface.BOLD);
+        label(root, "1. FPV 攝影機", 17).setTypeface(null, Typeface.BOLD);
         cameraAdapter = new Spinner(this);
         cameraAdapter.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item,
                 new String[]{"WLtoys 6405 UDP H.265（候選協定）", "HTTP JPEG/MJPEG（自訂）"}));
@@ -641,16 +641,16 @@ public final class MainActivity extends Activity {
 
         settingsCuts[1] = root.getChildCount(); // camera / FPV
         label(root, "2. 車型選擇與小車控制", 17).setTypeface(null, Typeface.BOLD);
-        label(root, "WL Tech 已有原廠候選控制協定；KL FPV 需本地 Agent 擷取資料後再實作，不能套用 WL 封包。", 12);
+        label(root, "目前可使用 WL Tech FPV 或自訂封包。切換車型前請先停止車輛。", 12);
         profile = new Spinner(this);
         profile.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item,
-                new String[]{"自訂封包", "WL Tech FPV（現有）", "KL FPV（待驗證）"}));
+                CarProfile.visibleOptions()));
         profile.setSelection(activeProfile.spinnerIndex);
         root.addView(profile);
-        label(root, "切換車型會先停車上鎖，各車獨立保存 IP／影像／調校。KL 在驗證前禁止解鎖或發送影像初始化封包。", 12);
+        label(root, "切換車型會先停車上鎖，各車獨立保存 IP／影像／調校。", 12);
         profile.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(android.widget.AdapterView<?> parent, View view, int position, long id) {
-                switchVehicle(CarProfile.fromIndex(position));
+                switchVehicle(CarProfile.visibleFromIndex(position));
             }
             @Override public void onNothingSelected(android.widget.AdapterView<?> parent) {}
         });
