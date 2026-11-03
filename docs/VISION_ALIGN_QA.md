@@ -2,7 +2,7 @@
 
 ## Exact scope
 
-- Select one person **manually** on the FPV image; detector never selects or switches people itself.
+- Select one person **manually** on the FPV image; detector never selects or switches people itself. A **fresh human box-tap is required for every new session**, including retries after completion; the model cannot repeatedly restart its own alignment.
 - Tap `對準人` or ask Gemini `看著那個人` (`align_selected_person`) after manual motor unlock.
 - Controller may emit at most **3** low-gain **160ms forward+steering** pulses in a **6.5-second** explicit session. It sends **no forward-only, reverse, search/spin or auto-follow** commands.
 - Both axes go neutral at each pulse expiry. A further correction requires a **new** captured image after **240ms** of stopped settling, and a smaller target-center error. Manual override or STOP cancels.
