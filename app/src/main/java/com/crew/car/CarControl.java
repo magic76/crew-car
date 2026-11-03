@@ -38,6 +38,9 @@ public final class CarControl {
     private volatile boolean visionFollowActive;
     private volatile long lastDriveIntentAt;
     private volatile long visionFollowLimitAt;
+    /** Local observation-only alignment telemetry: application times, NOT RC acknowledgements. */
+    private volatile long visionAlignPulseAcceptedAt;
+    private volatile long visionAlignPulseStoppedAt;
     private volatile BooleanSupplier visionSafetyGate = () -> false;
     private volatile int aiSteer, aiThrottle;
     /** Expiring steering correction; 0 = latch current direction until explicitly changed. */
@@ -80,8 +83,11 @@ public final class CarControl {
                     boolean timedOut = now >= visionFollowLimitAt;
                     visionFollowActive = false;
                     if (timedOut || !safe) armed = false;
+                    boolean alignmentPulse = active.startsWith("vision-align:");
                     stopInternal(timedOut ? "vision session limit" :
-                            !safe ? "vision camera/target gate stale" : "vision input lease expired");
+                            !safe ? "vision camera/target gate stale" :
+                                    alignmentPulse ? "vision align pulse lease expired" :
+                                            "vision input lease expired");
                     return;
                 }
             }
@@ -136,7 +142,9 @@ public final class CarControl {
             if (armed && config.wltoys) {
                 if (!"stop".equals(active) &&
                         SystemClock.elapsedRealtime() >= deadline) {
-                    stopInternal("motor deadline reached before transmit");
+                    stopInternal(active.startsWith("vision-align:") ?
+                            "vision align pulse lease expired" :
+                            "motor deadline reached before transmit");
                 } else {
                     sendInternal(active);
                 }
@@ -176,6 +184,8 @@ public final class CarControl {
         aiSafetyGate = gate == null ? () -> false : gate;
     }
     public boolean visionFollowActive() { return visionFollowActive && armed && SystemClock.elapsedRealtime() < visionFollowLimitAt; }
+    public long visionAlignPulseAcceptedAt() { return visionAlignPulseAcceptedAt; }
+    public long visionAlignPulseStoppedAt() { return visionAlignPulseStoppedAt; }
     public void setVisionSafetyGate(BooleanSupplier gate) {
         visionSafetyGate = gate == null ? () -> false : gate;
     }
@@ -525,6 +535,57 @@ public final class CarControl {
         return "queued visual axes, short lease; no vehicle ACK";
     }
 
+    /**
+     * One 160ms low-power turn attempt for a manually selected target.
+     * A conventional steered RC car needs a little forward throttle to change
+     * heading. This is NOT a safe zero-translation turn or obstacle avoidance.
+     * The existing VISION motor owner and watchdog enforce an actual neutral STOP.
+     */
+    public String driveVisionAlignPulse(int steer, long observedAt) {
+        if (steer != -1 && steer != 1) return "blocked: alignment needs left/right";
+        if (!armed || manual || aiHoldActive || visionFollowActive ||
+                !"stop".equals(active) ||
+                !MotorAuthorityPolicy.canClaim(owner(), MotorAuthorityPolicy.Owner.VISION))
+            return "blocked: car not stationary, armed and idle";
+        if (!config.wltoys || config.carProfile != CarProfile.WL_TECH)
+            return "blocked: WL Tech only";
+        long now = SystemClock.elapsedRealtime();
+        if (observedAt <= 0 || observedAt > now || now - observedAt > 250)
+            return "blocked: stale target frame";
+        boolean safe;
+        try { safe = visionSafetyGate.getAsBoolean(); }
+        catch (Exception ex) { safe = false; }
+        if (!safe) return "blocked: person/camera/Wi-Fi safety gate";
+        final long epoch = motionEpoch.get();
+        final long submittedAt = now;
+        io.execute(() -> {
+            long at = SystemClock.elapsedRealtime();
+            if (at - submittedAt > 180 || at - observedAt > 250 ||
+                    !armed || manual || aiHoldActive || visionFollowActive ||
+                    !"stop".equals(active) || motionEpoch.get() != epoch ||
+                    !MotorAuthorityPolicy.canClaim(owner(), MotorAuthorityPolicy.Owner.VISION)) {
+                log.i("ALIGN", "late or competing alignment pulse discarded");
+                return;
+            }
+            boolean fresh;
+            try { fresh = visionSafetyGate.getAsBoolean(); }
+            catch (Exception ex) { fresh = false; }
+            if (!fresh) {
+                log.i("ALIGN", "pulse rejected due to stale target");
+                return;
+            }
+            visionFollowActive = true; // EXCLUSIVE motor authority during this pulse only.
+            visionFollowLimitAt = at + VisionAlignPlanner.PULSE_MS + 300;
+            deadline = at + VisionAlignPlanner.PULSE_MS;
+            visionAlignPulseAcceptedAt = at;
+            active = "vision-align:" + steer + ":1";
+            sendInternal(active);
+            log.i("ALIGN", "short heading nudge accepted steer=" + steer +
+                    " ms=" + VisionAlignPlanner.PULSE_MS + " (no car ACK)");
+        });
+        return "queued one low-power alignment nudge (no car ACK)";
+    }
+
     public void stopVisionFollow() { stopVisionFollow("vision stopped"); }
 
     public void stopVisionFollow(String reason) {
@@ -600,6 +661,8 @@ public final class CarControl {
 
     private void stopInternal(String reason, Config target, long requestedAt) {
         long now = SystemClock.elapsedRealtime();
+        if (active.startsWith("vision-align:"))
+            visionAlignPulseStoppedAt = now;
         lastStopRequestedAt = requestedAt;
         lastStopLocalDelayMs = -1;
         lastStopReason = reason;
@@ -643,10 +706,12 @@ public final class CarControl {
         }
         try {
             byte[] bytes;
-            if (c.wltoys && direction.startsWith("vision:")) {
+            if (c.wltoys && (direction.startsWith("vision:") ||
+                    direction.startsWith("vision-align:"))) {
                 String[] axes = direction.split(":");
                 if (axes.length != 3) throw new IllegalArgumentException("bad vision command");
-                // Independent low power regardless of the selected manual tuning.
+                // Configurable hardware-safe minimum is 50% of OEM gains.
+                // Alignment is bounded by a very short local motor lease.
                 CarTuning reduced = new CarTuning(c.tuning.intervalMs, 50, 50);
                 bytes = WltoysProtocol.control(Integer.parseInt(axes[1]),
                         Integer.parseInt(axes[2]), reduced);

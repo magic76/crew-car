@@ -52,6 +52,14 @@ public final class GeminiCarTools {
 
         return new JSONArray()
                 .put(intent)
+                .put(action("align_selected_person",
+                        "Only for explicit request '看著那個人/對準那個人' after a human manually " +
+                        "tapped that person's box in live camera. It starts a maximum of three " +
+                        "160ms local low-gain FORWARD+STEER pulses, never forward-only. " +
+                        "After every pulse both axes STOP, and another pulse requires a new camera " +
+                        "frame AFTER actual local STOP and settling. May creep forward. No depth, " +
+                        "collision avoidance, autonomous target selection or auto restart. " +
+                        "Human must unlock and supervise; if blocked ask human to select a person."))
                 .put(action("stop_car",
                         "Immediately request neutral STOP even if locked; do not claim car ACK."))
                 .put(action("lock_car",

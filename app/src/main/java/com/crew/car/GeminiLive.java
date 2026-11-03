@@ -40,6 +40,7 @@ public final class GeminiLive {
         void onStatus(String value);
         String onDrive(String direction, int milliseconds);
         String onDriveIntent(String intent);
+        String onAlignSelectedPerson();
         String onDriveState(String steering, String throttle, int leaseMs);
         String onSteer(String direction, int holdMs);
         void onSpeechState(boolean speaking);
@@ -244,7 +245,10 @@ public final class GeminiLive {
                     "即使影像新鮮也不能保證安全；靠近牆壁或障礙物時請停止移動。" +
                     "仍須人類在 App 解鎖與現場監督，使用者說停立刻 stop_car、說鎖車立刻 lock_car。" +
                     "不需額外 8／20 秒授權；工具 queued 不能當作車輛已經移動。" +
-                    "若不確定方向先詢問；不自行猜測位置、距離、目標是否抵達。";
+                    "若不確定方向先詢問；不自行猜測位置、距離、目標是否抵達。" +
+                    "使用者說「看著那個人／對準前面那個人」時，僅在 App 已由人類點選人物框後才可呼叫 align_selected_person。" +
+                    "這不是自動跟隨或避障；最多三次160毫秒小幅前進加轉向，每次都先停車再看新畫面；可能向前位移。" +
+                    "不能自行選擇人物或連續重新開始對準，請求若被拒絕則請人類點選框並在開闊地方測試。";
             return new JSONObject().put("setup", new JSONObject()
                     .put("model", MODEL)
                     .put("generationConfig", new JSONObject()
@@ -415,7 +419,8 @@ public final class GeminiLive {
                     try {
                         if (safetyOverride && ("drive_car".equals(name) ||
                                 "set_drive_state".equals(name) || "steer_car".equals(name) ||
-                                "drive_intent".equals(name))) {
+                                "drive_intent".equals(name) ||
+                                "align_selected_person".equals(name))) {
                             result = toolStatus("blocked", "STOP/lock in same tool batch takes priority");
                         } else {
                             result = executeTool(name, call.optJSONObject("args"));
@@ -498,6 +503,20 @@ public final class GeminiLive {
                         .put("obstacle_clearance_verified", false)
                         .put("device_acknowledged", false)
                         .put("motion_verified", false);
+            }
+            case "align_selected_person": {
+                String result = listener.onAlignSelectedPerson();
+                boolean blocked = result == null || result.startsWith("blocked");
+                return toolStatus(blocked ? "blocked" : "started",
+                        result == null ? "no result" : result)
+                        .put("target_auto_selected", false)
+                        .put("manual_target_selection_required", true)
+                        .put("max_forward_steer_pulses", VisionAlignPlanner.MAX_PULSES)
+                        .put("pulse_ms", VisionAlignPlanner.PULSE_MS)
+                        .put("each_pulse_requires_post_stop_camera_frame", true)
+                        .put("forward_translation_possible", true)
+                        .put("obstacle_clearance_verified", false)
+                        .put("device_acknowledged", false);
             }
             case "set_drive_state": {
                 String steering = args == null ? "" : args.optString("steering", "");
