@@ -118,7 +118,7 @@ public final class CarControl {
                 if (aiSteerReleaseAt > 0 && now >= aiSteerReleaseAt) {
                     aiSteerReleaseAt = 0;
                     aiStopWithSteering = false;
-        aiVideoGuarded = false;
+                    // Recenter steering but KEEP video watchdog and forward throttle.
                     aiSteer = 0;
                     String command = aiDriveSessionActive ?
                             "ai-session:0:1:" + aiDriveSpeedGain :
