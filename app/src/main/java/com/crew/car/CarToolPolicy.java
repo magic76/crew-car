@@ -16,7 +16,8 @@ public final class CarToolPolicy {
 
     public static boolean isSupported(String name) {
         // Expose a single motion entry even if a stale model hallucinates old tools.
-        return "drive_intent".equals(name) || "stop_car".equals(name) ||
+        return "drive_intent".equals(name) || "align_selected_person".equals(name) ||
+                "stop_car".equals(name) ||
                 "lock_car".equals(name) || "get_car_status".equals(name) ||
                 "get_camera_status".equals(name) || "get_network_status".equals(name);
     }
