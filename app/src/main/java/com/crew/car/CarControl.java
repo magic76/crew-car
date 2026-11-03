@@ -334,7 +334,13 @@ public final class CarControl {
         if (!safe) return "blocked: camera/Live/network safety gate";
         final String cmd = "axes:" + steer + ":" + gas;
         final long epoch = motionEpoch.get();
+        final long submittedAt = SystemClock.elapsedRealtime();
         io.execute(() -> {
+            // Do not begin an outdated voice command after the serial I/O stalls.
+            if (SystemClock.elapsedRealtime() - submittedAt > 500) {
+                log.i("AI", "stale queued drive command discarded");
+                return;
+            }
             if (!armed || manual || visionFollowActive || epoch != motionEpoch.get() ||
                     (!MotorAuthorityPolicy.canClaim(owner(), MotorAuthorityPolicy.Owner.GEMINI) &&
                      !MotorAuthorityPolicy.canUpdate(owner(), MotorAuthorityPolicy.Owner.GEMINI))) return;
