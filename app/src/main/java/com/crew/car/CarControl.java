@@ -114,7 +114,7 @@ public final class CarControl {
                     if (!safe) {
                         aiHoldActive = false;
                         armed = false; // fail closed: require human to re-arm after lost safety
-                        stopInternal("AI camera/Live/network gate stale");
+                        stopInternal("AI Live/Wi-Fi/foreground gate stale");
                         return;
                     }
                 }
@@ -321,8 +321,9 @@ public final class CarControl {
 
     /**
      * One tool call creates a bounded drive lease, maintained by the existing
-     * 10-100ms motor ticker. Caller must verify camera/Live freshness first.
-     * Safety guard rechecked every 100ms and expiry always sends neutral.
+     * 10-100ms motor ticker. Foreground, Live, Wi-Fi and human arm are
+     * separately checked; a fresh camera image is NOT obstacle clearance.
+     * Safety gate rechecked every 100ms and expiry sends neutral.
      */
     public String holdAiAxes(String steering, String throttle, int leaseMs) {
         return holdAiAxes(steering, throttle, leaseMs, false);
@@ -354,7 +355,7 @@ public final class CarControl {
         }
         boolean safe;
         try { safe = aiSafetyGate.getAsBoolean(); } catch (Exception e) { safe = false; }
-        if (!safe) return "blocked: camera/Live/network safety gate";
+        if (!safe) return "blocked: Live/Wi-Fi/foreground safety gate";
         final String cmd = "axes:" + steer + ":" + gas;
         final long epoch = motionEpoch.get();
         final long submittedAt = SystemClock.elapsedRealtime();
