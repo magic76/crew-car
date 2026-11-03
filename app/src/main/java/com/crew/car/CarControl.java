@@ -42,6 +42,8 @@ public final class CarControl {
     private volatile int aiSteer, aiThrottle;
     /** Expiring steering correction; 0 = latch current direction until explicitly changed. */
     private volatile long aiSteerReleaseAt;
+    /** Voice diagonals stop both axes when steering ends; no straight throttle tail. */
+    private volatile boolean aiStopWithSteering;
     private volatile BooleanSupplier aiSafetyGate = () -> false;
     private volatile long lastAiSafetyCheckAt;
     private final AtomicLong motionEpoch = new AtomicLong();
@@ -85,8 +87,18 @@ public final class CarControl {
             }
             if (aiHoldActive && armed) {
                 long now = SystemClock.elapsedRealtime();
+                // Expiry has priority over re-centering: never send a final
+                // straight-throttle packet when a diagonal lease has ended.
+                if (DriveIntentPolicy.mustStopBothAxes(now, deadline,
+                        aiSteerReleaseAt, aiStopWithSteering)) {
+                    stopInternal(aiStopWithSteering ?
+                            "AI diagonal: steering and throttle stopped together" :
+                            "AI lease expired");
+                    return;
+                }
                 if (aiSteerReleaseAt > 0 && now >= aiSteerReleaseAt) {
                     aiSteerReleaseAt = 0;
+                    aiStopWithSteering = false;
                     aiSteer = 0;
                     String command = "axes:0:" + aiThrottle;
                     if (!command.equals(active)) {
@@ -95,11 +107,6 @@ public final class CarControl {
                     }
                     log.i("AI", "steering correction ended; throttle still held");
                 }
-                if (now >= deadline) {
-                    aiHoldActive = false;
-                    stopInternal("AI lease expired");
-                    return;
-                }
                 if (now - lastAiSafetyCheckAt >= 100) {
                     lastAiSafetyCheckAt = now;
                     boolean safe;
@@ -107,7 +114,7 @@ public final class CarControl {
                     if (!safe) {
                         aiHoldActive = false;
                         armed = false; // fail closed: require human to re-arm after lost safety
-                        stopInternal("AI camera/Live/network gate stale");
+                        stopInternal("AI Live/Wi-Fi/foreground gate stale");
                         return;
                     }
                 }
@@ -126,7 +133,14 @@ public final class CarControl {
     private ScheduledFuture<?> scheduleTransmitter(CarTuning tuning) {
         // Fixed-delay prevents a slow phone/UDP stack from creating catch-up packet bursts.
         return io.scheduleWithFixedDelay(() -> {
-            if (armed && config.wltoys) sendInternal(active);
+            if (armed && config.wltoys) {
+                if (!"stop".equals(active) &&
+                        SystemClock.elapsedRealtime() >= deadline) {
+                    stopInternal("motor deadline reached before transmit");
+                } else {
+                    sendInternal(active);
+                }
+            }
         }, tuning.intervalMs, tuning.intervalMs, TimeUnit.MILLISECONDS);
     }
 
@@ -204,6 +218,7 @@ public final class CarControl {
         visionFollowActive = false;
         visionFollowLimitAt = 0;
         aiSteerReleaseAt = 0;
+        aiStopWithSteering = false;
         boolean stopPrevious = armed || !"stop".equals(active);
         armed = false;
         manual = false;
@@ -251,6 +266,7 @@ public final class CarControl {
         visionFollowActive = false;
         aiHoldActive = false;
         aiSteerReleaseAt = 0;
+        aiStopWithSteering = false;
         boolean stopCurrent = armed || !"stop".equals(active);
         armed = false;
         manual = false;
@@ -305,10 +321,16 @@ public final class CarControl {
 
     /**
      * One tool call creates a bounded drive lease, maintained by the existing
-     * 10-100ms motor ticker. Caller must verify camera/Live freshness first.
-     * Safety guard rechecked every 100ms and expiry always sends neutral.
+     * 10-100ms motor ticker. Foreground, Live, Wi-Fi and human arm are
+     * separately checked; a fresh camera image is NOT obstacle clearance.
+     * Safety gate rechecked every 100ms and expiry sends neutral.
      */
     public String holdAiAxes(String steering, String throttle, int leaseMs) {
+        return holdAiAxes(steering, throttle, leaseMs, false);
+    }
+
+    private String holdAiAxes(String steering, String throttle, int leaseMs,
+                              boolean stopWithSteering) {
         String violation = CarToolPolicy.validateHold(steering, throttle, leaseMs);
         if (violation != null) return violation;
         if (!armed) return "blocked: control locked";
@@ -325,13 +347,15 @@ public final class CarControl {
                 "left".equals(steering) ? -1 : "right".equals(steering) ? 1 : 0;
         int gas = "keep".equals(throttle) ? aiThrottle :
                 "forward".equals(throttle) ? 1 : "reverse".equals(throttle) ? -1 : 0;
+        if (stopWithSteering && (steer == 0 || gas == 0))
+            return "blocked: diagonal stop-with-steering requires both axes";
         if (steer == 0 && gas == 0) {
             emergencyStop();
             return "stopped: both axes neutral";
         }
         boolean safe;
         try { safe = aiSafetyGate.getAsBoolean(); } catch (Exception e) { safe = false; }
-        if (!safe) return "blocked: camera/Live/network safety gate";
+        if (!safe) return "blocked: Live/Wi-Fi/foreground safety gate";
         final String cmd = "axes:" + steer + ":" + gas;
         final long epoch = motionEpoch.get();
         final long submittedAt = SystemClock.elapsedRealtime();
@@ -357,8 +381,9 @@ public final class CarControl {
             }
             aiSteer = steer;
             aiThrottle = gas;
-            // A persistent left/right turn makes the RC car circle. Always re-center
-            // steering quickly, even if the human explicitly requested long throttle.
+            aiStopWithSteering = stopWithSteering;
+            // Unverified voice diagonals stop BOTH axes before this release.
+            // Legacy internal steering-only callers may re-center while holding gas.
             long now = SystemClock.elapsedRealtime();
             aiSteerReleaseAt = steer == 0 ? 0 :
                     now + DriveIntentPolicy.TURN_RECENTER_MS;
@@ -431,11 +456,14 @@ public final class CarControl {
         long now = SystemClock.elapsedRealtime();
         if (lastDriveIntentAt > 0 && now - lastDriveIntentAt < 750)
             return "blocked: drive intent cooldown; wait for previous movement";
-        String result = holdAiAxes(plan.steering, plan.throttle, plan.leaseMs);
+        String result = holdAiAxes(plan.steering, plan.throttle, plan.leaseMs,
+                plan.stopWithSteering);
         if (result != null && !result.startsWith("blocked")) {
             lastDriveIntentAt = now;
             log.i("DRIVE_INTENT", "intent=" + plan.intent +
-                    " durationMs=" + plan.leaseMs + " (no car acknowledgement)");
+                    " durationMs=" + plan.leaseMs +
+                    " stopBothAxes=" + plan.stopWithSteering +
+                    " (no car acknowledgement)");
         }
         return result;
     }
@@ -551,6 +579,7 @@ public final class CarControl {
         visionFollowActive = false;
         visionFollowLimitAt = 0;
         aiSteerReleaseAt = 0;
+        aiStopWithSteering = false;
         aiHoldActive = false;
         aiSteer = 0;
         aiThrottle = 0;
@@ -578,6 +607,7 @@ public final class CarControl {
         visionFollowActive = false;
         visionFollowLimitAt = 0;
         aiSteerReleaseAt = 0;
+        aiStopWithSteering = false;
         aiHoldActive = false;
         aiSteer = 0;
         aiThrottle = 0;

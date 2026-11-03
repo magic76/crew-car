@@ -24,25 +24,22 @@ public final class GeminiCarTools {
 
     public static JSONArray declarations() throws JSONException {
         JSONObject intent = action("drive_intent",
-                "Use for ONE explicit user speech command to move the RC car. " +
-                "No extra 8/20-second UI authorization: human only needs to unlock the car. " +
-                "Choose the exact requested intent, not milliseconds. " +
-                "forward_small = '前進一點/稍微往前' (0.5s); " +
-                "forward = '往前進/向前開/前進' (2.5s, NOT a tiny tap); " +
-                "forward_continuous = '一直前進/持續往前/往前開不要停' (bounded 15s local lease). " +
-                "backward_small = '後退一點' (0.5s), backward = '倒車/往後退' (2s); " +
-                "front_left/front_right = '往左前方/往右前方' (2s forward plus steering " +
-                "automatically centered within 650ms). Add _small only if user said '一點'. " +
-                "Never select forward_small for plain '前進'. " +
-                "Unknown target location = ask user for direction. Never infer physical distance, " +
-                "obstacle clearance, arrival or actual car movement. Never chain calls automatically.");
+                "One explicit spoken RC-car command only. Fixed short Android motor leases; " +
+                "no trajectory correction, distance sensing, wall detection or collision avoidance. " +
+                "forward_small = '前進一點' (0.5s); forward = '往前進' (0.9s); " +
+                "backward_small = '後退一點' (0.5s); backward = '倒車' (0.9s). " +
+                "front_left/front_right = '往左前方/往右前方' (0.6s steering AND throttle, " +
+                "both STOP together, no straight tail); _small is 0.5s. " +
+                "Continuous/indefinite forward driving is NOT available without verified obstacle " +
+                "feedback. Explain this limit rather than choosing another intent. " +
+                "Never infer obstacle clearance, distance, arrival or successful vehicle movement. " +
+                "Never chain motion tools. Only human unlock enables short supervised moves.");
         intent.getJSONObject("parameters")
                 .put("properties", new JSONObject()
                         .put("intent", new JSONObject().put("type", "STRING")
                                 .put("enum", new JSONArray()
                                         .put("forward_small")
                                         .put("forward")
-                                        .put("forward_continuous")
                                         .put("backward_small")
                                         .put("backward")
                                         .put("front_left_small")

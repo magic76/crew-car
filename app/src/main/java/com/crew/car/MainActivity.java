@@ -262,7 +262,7 @@ public final class MainActivity extends Activity {
                 gemini.ready() && routes.wifi() != null);
         render();
         log.setListener(s -> runOnUiThread(() -> { if (logs != null) logs.setText(s); }));
-        log.i("APP", "Crew Car v0.1.26; one-tool natural voice driving without direction authorization window; no vehicle ACK");
+        log.i("APP", "Crew Car voice safety: short supervised intent leases, diagonal dual-axis STOP, no collision avoidance or vehicle ACK");
         routes.diagnostics();
     }
 
@@ -801,8 +801,9 @@ public final class MainActivity extends Activity {
             if (!gemini.sendText(prompt.getText().toString())) log.e("LIVE", "請先連線 Gemini");
             else log.i("LIVE", "text turn sent (content redacted)");
         }), new LinearLayout.LayoutParams(-1, dp(50)));
-        label(root, "Gemini 語音駕駛：解鎖後直接說「前進一點／往前進／持續前進／往左前方」。" +
-                "不需要額外導向授權。本地程式決定動作時間，到期自動停止；無測距與避障能力。", 12);
+        label(root, "Gemini 語音駕駛：解鎖後可說「前進一點／往前進／往左前方」。" +
+                "僅限短距離且需人在旁監督；斜向轉向與油門會一起停止。" +
+                "持續前進暫停支援；相機無測距或可靠避障能力，靠近牆壁請勿啟動。", 12);
         root.addView(button("測試 AI 查詢工具（不移動）", v -> {
             if (!gemini.sendText("請先呼叫 get_car_status、get_camera_status、get_network_status，然後用繁體中文告訴我連線與安全狀態，不要移動小車。")) {
                 log.e("TOOL", "Live disconnected; cannot request tool smoke test");
@@ -1562,6 +1563,9 @@ public final class MainActivity extends Activity {
                         "voice_drive_intent_requires_extra_approval", false,
                         "voice_drive_intent_requires_manual_arm", true,
                         "voice_drive_intent_distance_measured", false,
+                        "voice_drive_intent_trajectory_correction_available", false,
+                        "voice_drive_intent_long_cruise_available", false,
+                        "voice_drive_intent_obstacle_avoidance_available", false,
                         "last_stop_reason", control.lastStopReason(),
                         "last_stop_local_send_delay_ms", control.lastStopLocalDelayMs(),
                         "last_stop_sent_at_elapsed_ms", control.lastStopSentAt(),

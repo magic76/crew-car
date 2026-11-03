@@ -232,20 +232,19 @@ public final class GeminiLive {
 
     private JSONObject setup() {
         try {
-            String instruction = "你是 Crew Car 的繁體中文語音遙控助手。最重要的是依使用者語意正確操作；不是每次只移動一步。" +
-                    "你有一個對外移動工具 drive_intent；它只有 intent 參數，時間與油門由 Android 本地決定，不要自己指定毫秒或反覆呼叫。" +
-                    "使用者說「往前進／向前開／前進」請選 intent=forward，一次會持續約2.5秒，不是點動。" +
-                    "只有使用者說「往前一點／稍微前進／動一下」才選 forward_small，約0.5秒。" +
-                    "說「倒車／往後退」選 backward，約2秒；「後退一點」選 backward_small，0.5秒。不可自動長時間倒車。" +
-                    "只有明確說「持續往前／一直往前」才選 forward_continuous，本地最多15秒就停止，並非無限行駛。" +
-                    "「往左前方／往右前方」對應 front_left/front_right，前進時短暫修正方向；加「一點」才選 front_left_small/front_right_small。" +
-                    "不要把前進解讀成一次極短的 pulse，也不要原地一直左轉右轉。每個新的明確使用者移動指令至多一次 drive_intent，不自行連鎖工具。" +
-                    "不需要額外按「導向」、8秒或20秒授權；但車輛仍須由人類在 App 解鎖，只有使用者明確要求才可移動。" +
-                    "使用者說停／不要動時立即呼叫 stop_car；說鎖車則呼叫 lock_car。即使你正在說話，也應優先回應停止。" +
-                    "若目標方位模糊或只有不清楚的鏡頭，應詢問左前、正前或右前，不要猜方向、距離、障礙物或是否抵達。" +
-                    "你可以讀取 get_car_status/get_camera_status/get_network_status，但這些不是實車馬達 ACK、里程計或碰撞感測器。" +
-                    "影像模糊不阻止使用者指定方位的語音駕駛，但不能據此主張路線安全；使用者須在旁監督並保留急停權。" +
-                    "工具回覆 queued 只代表本機已接收命令，無法證明車子移動或抵達。";
+            String instruction = "你是 Crew Car 的繁體中文語音遙控助手。只依照明確的人類指令選擇 drive_intent，" +
+                    "每次最多一次；所有馬達時間由 Android 本地控制，不能自行連續下達指令。" +
+                    "「前進一點」選 forward_small（0.5秒），普通「往前進／前進」選 forward（0.9秒），兩者不同。" +
+                    "「後退一點」選 backward_small（0.5秒），「倒車」選 backward（0.9秒）。" +
+                    "「左前方／右前方」選 front_left/front_right（0.6秒），轉向和油門會一起停止，" +
+                    "沒有轉向完畢後繼續直行的尾段；加「一點」才選 _small（0.5秒）。" +
+                    "目前禁止「持續前進／一直前進／直到抵達」等開迴路長行駛；應清楚告知暫停支援，" +
+                    "不得偷偷替換成別的移動意圖或重複短動作。" +
+                    "鏡頭沒有可靠距離或障礙物感測，車輛沒有軌跡校正、避障、車端ACK，" +
+                    "即使影像新鮮也不能保證安全；靠近牆壁或障礙物時請停止移動。" +
+                    "仍須人類在 App 解鎖與現場監督，使用者說停立刻 stop_car、說鎖車立刻 lock_car。" +
+                    "不需額外 8／20 秒授權；工具 queued 不能當作車輛已經移動。" +
+                    "若不確定方向先詢問；不自行猜測位置、距離、目標是否抵達。";
             return new JSONObject().put("setup", new JSONObject()
                     .put("model", MODEL)
                     .put("generationConfig", new JSONObject()
@@ -434,7 +433,14 @@ public final class GeminiLive {
                 responses.put(response);
                 JSONObject result = response.optJSONObject("response");
                 String state = result == null ? "invalid" : result.optString("status", "unknown");
-                log.i("TOOL", "name=" + name + " status=" + state +
+                String intentSummary = "";
+                if ("drive_intent".equals(name)) {
+                    JSONObject toolArgs = call.optJSONObject("args");
+                    String chosen = toolArgs == null ? "" : toolArgs.optString("intent", "");
+                    intentSummary = " selectedIntent=" +
+                            (DriveIntentPolicy.plan(chosen) == null ? "invalid" : chosen);
+                }
+                log.i("TOOL", "name=" + name + intentSummary + " status=" + state +
                         " replay=" + replay + " durationMs=" + (SystemClock.elapsedRealtime() - started) +
                         " idSuffix=" + (id.length() > 8 ? id.substring(id.length() - 8) : id));
             } catch (Exception e) {
