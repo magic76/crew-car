@@ -89,19 +89,16 @@ public final class CarControl {
                 long now = SystemClock.elapsedRealtime();
                 // Expiry has priority over re-centering: never send a final
                 // straight-throttle packet when a diagonal lease has ended.
-                if (now >= deadline) {
+                if (DriveIntentPolicy.mustStopBothAxes(now, deadline,
+                        aiSteerReleaseAt, aiStopWithSteering)) {
                     stopInternal(aiStopWithSteering ?
-                            "AI diagonal: steering and throttle expired together" :
+                            "AI diagonal: steering and throttle stopped together" :
                             "AI lease expired");
                     return;
                 }
                 if (aiSteerReleaseAt > 0 && now >= aiSteerReleaseAt) {
-                    if (aiStopWithSteering) {
-                        stopInternal("AI diagonal: steering and throttle stopped together");
-                        return;
-                    }
                     aiSteerReleaseAt = 0;
-        aiStopWithSteering = false;
+                    aiStopWithSteering = false;
                     aiSteer = 0;
                     String command = "axes:0:" + aiThrottle;
                     if (!command.equals(active)) {
@@ -384,8 +381,8 @@ public final class CarControl {
             aiSteer = steer;
             aiThrottle = gas;
             aiStopWithSteering = stopWithSteering;
-            // A persistent left/right turn makes the RC car circle. Always re-center
-            // steering quickly, even if the human explicitly requested long throttle.
+            // Unverified voice diagonals stop BOTH axes before this release.
+            // Legacy internal steering-only callers may re-center while holding gas.
             long now = SystemClock.elapsedRealtime();
             aiSteerReleaseAt = steer == 0 ? 0 :
                     now + DriveIntentPolicy.TURN_RECENTER_MS;
