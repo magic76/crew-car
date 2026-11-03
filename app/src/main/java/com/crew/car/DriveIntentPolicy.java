@@ -38,6 +38,10 @@ public final class DriveIntentPolicy {
                 return new Plan(intent, "center", "forward", FORWARD_MS);
             case "forward_continuous":
                 return new Plan(intent, "center", "forward", CRUISE_MS);
+            case "backward_small":
+                return new Plan(intent, "center", "reverse", NUDGE_MS);
+            case "backward":
+                return new Plan(intent, "center", "reverse", 2000);
             case "front_left_small":
                 return new Plan(intent, "left", "forward", NUDGE_MS);
             case "front_right_small":
