@@ -16,13 +16,20 @@ public final class CarToolPolicy {
 
     public static boolean isSupported(String name) {
         // Expose a single motion entry even if a stale model hallucinates old tools.
-        return "drive_intent".equals(name) || "align_selected_person".equals(name) ||
+        return "drive_intent".equals(name) || "guide_toward_person".equals(name) ||
+                "align_selected_person".equals(name) ||
                 "stop_car".equals(name) ||
                 "lock_car".equals(name) || "get_car_status".equals(name) ||
                 "get_camera_status".equals(name) || "get_network_status".equals(name);
     }
 
     /** The model never supplies movement time; the on-device plan is deterministic. */
+    /** Gemini must choose a single coarse bearing, never a route or duration. */
+    public static String validatePersonBearing(String bearing) {
+        return PersonBearingPolicy.intentFor(bearing) == null ?
+                "blocked: person bearing unclear; no movement" : null;
+    }
+
     public static String validateDriveIntent(String intent) {
         return DriveIntentPolicy.plan(intent) == null ?
                 "blocked: unsupported voice intent" : null;
