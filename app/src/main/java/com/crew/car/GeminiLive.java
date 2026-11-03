@@ -236,6 +236,7 @@ public final class GeminiLive {
                     "你有一個對外移動工具 drive_intent；它只有 intent 參數，時間與油門由 Android 本地決定，不要自己指定毫秒或反覆呼叫。" +
                     "使用者說「往前進／向前開／前進」請選 intent=forward，一次會持續約2.5秒，不是點動。" +
                     "只有使用者說「往前一點／稍微前進／動一下」才選 forward_small，約0.5秒。" +
+                    "說「倒車／往後退」選 backward，約2秒；「後退一點」選 backward_small，0.5秒。不可自動長時間倒車。" +
                     "只有明確說「持續往前／一直往前」才選 forward_continuous，本地最多15秒就停止，並非無限行駛。" +
                     "「往左前方／往右前方」對應 front_left/front_right，前進時短暫修正方向；加「一點」才選 front_left_small/front_right_small。" +
                     "不要把前進解讀成一次極短的 pulse，也不要原地一直左轉右轉。每個新的明確使用者移動指令至多一次 drive_intent，不自行連鎖工具。" +
