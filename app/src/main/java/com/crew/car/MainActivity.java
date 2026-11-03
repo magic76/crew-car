@@ -75,6 +75,8 @@ public final class MainActivity extends Activity {
                     aiDriveStatus.setText("AI 導向已授權 · 剩餘 " +
                             control.approachPulsesRemaining() + " 次 / " +
                             control.approachPermitRemainingMs() + "ms");
+                else if (control.approachModeLatched())
+                    aiDriveStatus.setText("導向額度到期 · 重新按「導向」授權");
                 else if (control.visionFollowActive())
                     aiDriveStatus.setText("跟隨人物中 · 最多 8 秒 · 可按急停");
                 else if (control.aiHoldActive())
@@ -1635,6 +1637,7 @@ public final class MainActivity extends Activity {
                         "motor_authority", control.owner().name(),
                         "approach_tool_available", activeProfile == CarProfile.WL_TECH,
                         "approach_authorized", control.approachAuthorized(),
+                        "approach_mode_latched", control.approachModeLatched(),
                         "approach_pulse_active", control.approachPulseActive(),
                         "approach_pulses_remaining", control.approachPulsesRemaining(),
                         "approach_authorization_remaining_ms",
