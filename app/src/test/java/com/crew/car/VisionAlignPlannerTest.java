@@ -21,10 +21,10 @@ public class VisionAlignPlannerTest {
         assertEquals(VisionAlignPlanner.Command.WAIT,
                 p.observe(box(.42f, .14f), 1300, 1310, true, 1070, 1250,
                         "vision align pulse lease expired").command);
+        VisionAlignPlanner right = new VisionAlignPlanner();
+        right.start(1000, 999);
         assertEquals(VisionAlignPlanner.Command.RIGHT,
-                new VisionAlignPlanner() {{
-                    start(1000, 999);
-                }}.observe(box(.62f, .14f), 1030, 1050, true, 0, 0, "").command);
+                right.observe(box(.62f, .14f), 1030, 1050, true, 0, 0, "").command);
         assertEquals(VisionAlignPlanner.Command.LEFT,
                 p.observe(box(.42f, .14f), 1510, 1520, true, 1070, 1250,
                         "vision align pulse lease expired").command);
