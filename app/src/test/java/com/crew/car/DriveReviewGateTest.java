@@ -33,6 +33,22 @@ public final class DriveReviewGateTest {
         assertEquals(1, gate.expiredCount());
     }
 
+    @Test public void modelCanCorrectSameSessionRepeatedlyForFullThirtySeconds() {
+        DriveReviewGate gate = new DriveReviewGate();
+        long sessionId = 42;
+        // Each FPV check completes before the next one; no new motor
+        // session ID is required throughout the 30-second driving window.
+        for (long at = 700; at <= 28_200; at += DriveReviewGate.MIN_REVIEW_INTERVAL_MS) {
+            assertTrue("review " + at, gate.begin(sessionId, at));
+            assertFalse("overlap " + at, gate.begin(sessionId, at + 100));
+            gate.completeTool(sessionId);
+            assertFalse(gate.isPending());
+        }
+        assertEquals(12, gate.queuedCount());
+        assertEquals(12, gate.skippedCount());
+        assertEquals(0, gate.expiredCount());
+    }
+
     @Test public void resetClearsOldLiveConnectionPendingState() {
         DriveReviewGate gate = new DriveReviewGate();
         assertFalse(gate.begin(0, 100));
