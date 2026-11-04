@@ -9,7 +9,7 @@ package com.crew.car;
  */
 public final class DriveReviewGate {
     public static final long FIRST_REVIEW_DELAY_MS = 700;
-    public static final long MIN_REVIEW_INTERVAL_MS = 2_500;
+    public static final long MIN_REVIEW_INTERVAL_MS = AiDriveSessionPolicy.VIDEO_REVIEW_INTERVAL_MS;
     public static final long IN_FLIGHT_TIMEOUT_MS = 4_500;
 
     private long pendingSessionId;
