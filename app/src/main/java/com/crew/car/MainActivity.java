@@ -82,8 +82,8 @@ public final class MainActivity extends Activity {
                 long sessionId = control.aiDriveSessionId();
                 if (sessionId != lastAiDriveReviewSessionId) {
                     lastAiDriveReviewSessionId = sessionId;
-                    // Ask for the first FPV correction after ~0.7s rather than
-                    // spending half the 5s lease waiting for the first prompt.
+                    // Ask for a first correction ~0.7s after motion starts;
+                    // subsequent reviews run through the same 30s session.
                     lastAiDriveReviewPromptAt = now -
                             DriveReviewGate.MIN_REVIEW_INTERVAL_MS +
                             DriveReviewGate.FIRST_REVIEW_DELAY_MS;
@@ -94,15 +94,26 @@ public final class MainActivity extends Activity {
                         cameraAgeMs() >= 0 && cameraAgeMs() <= 5000) {
                     lastAiDriveReviewPromptAt = now;
                     // Compact FPV-only prompt; no overlapping cloud visual reviews.
-                    // Motor cadence and the five-second cutoff remain on Android.
+                    // Motor cadence, 8s model-update watchdog and 30s cutoff stay on Android.
+                    String commandedThrottle = control.aiThrottle() < 0 ? "reverse" :
+                            control.aiThrottle() > 0 ? "forward" : "neutral";
+                    String commandedSteering = control.aiSteering() < 0 ? "left" :
+                            control.aiSteering() > 0 ? "right" : "center";
                     String review = "Crew Car AI Drive Session id=" + sessionId +
-                            "，目標「" + aiDriveGoal + "」。只根據近期FPV評估開口中心" +
+                            "，目標「" + aiDriveGoal + "」，Android當前持續送出的油門=" +
+                            commandedThrottle + "、轉向=" + commandedSteering +
+                            "、剩餘上限約" + control.aiLeaseRemainingMs() + "毫秒。" +
+                            "這是控制命令不是車子實際移動的ACK；請根據前後FPV來驗證方向效果。" +
+                            "只根據近期FPV評估開口中心" +
                             "相對畫面中心的偏移，使用同一session_id呼叫一次" +
                             " adjust_ai_drive_session：steering left/right/center/keep，" +
                             "speed slow/normal/fast/keep，motion keep/forward/reverse/stop。" +
-                            "正常路線維持normal，必要才slow。不要等待不存在的車端ACK，" +
-                            "不要反覆口頭報告。看不清不可宣稱抵達；必要時stop_car。" +
-                            "本段5秒到期由Android停止，不能重啟。";
+                            "即使方向不變，也要用steering=keep、speed=keep、motion=keep" +
+                            "呼叫adjust_ai_drive_session，維持模型控制更新；8秒無更新會停車。" +
+                            "正常路線維持normal，轉彎或狹窄時可減速。不要等待不存在的車端ACK，" +
+                            "不要反覆口頭報告。請比較前後FPV畫面，視野不明或接近障礙時應stop_car。" +
+                            "Android在同一段session內持續輸出控制封包，最長30秒；" +
+                            "禁止每次重新啟動，也禁止到期後自動續行。";
                     if (gemini.requestDriveReview(sessionId, review)) {
                         log.i("AI_REVIEW", "new FPV review id=" + sessionId +
                                 " queued; next review waits for turn/tool completion");
@@ -908,7 +919,8 @@ public final class MainActivity extends Activity {
             updateLockButton();
         });
         label(root, "直接說「朝門口開／持續前進」，不需額外按解鎖；Android 持續送油門封包（起步85%原廠增益）。" +
-                " Gemini 依車頭影像調整方向與相對增益，單次5秒；可在5秒內倒退或停車。" +
+                " Gemini 依持續更新的車頭影像調整方向與增益，單次最長30秒；" +
+                "期間可左轉、右轉、倒退或立即停車，不會每5秒停一次。" +
                 " 手動接管、明確停車、Live／車 Wi-Fi 或影像中斷會停止。沒有測距、避障或車端 ACK。", 12);
 
         // The technical tuning indicator belongs in Control settings, not
@@ -947,9 +959,10 @@ public final class MainActivity extends Activity {
             if (!gemini.sendText(prompt.getText().toString())) log.e("LIVE", "請先連線 Gemini");
             else log.i("LIVE", "text turn sent (content redacted)");
         }), new LinearLayout.LayoutParams(-1, dp(50)));
-        label(root, "語音「朝門口開／開始 AI 駕駛」：Android 預設一般油門85%原廠增益，Gemini 約每1.5秒" +
-                " 根據 FPV 朝目標修正方向。目標暫時離開畫面可低速觀察；單次5秒。" +
-                " 使用者停車、手動接管或失去連線／影像仍會停。無測距或車端 ACK。", 12);
+        label(root, "語音「朝門口開／開始 AI 駕駛」：Android 預設一般油門85%原廠增益，" +
+                "持續前進最長30秒。Gemini 約每2.5秒看新FPV，在同一段行駛中修正方向／倒退／停止。" +
+                " 若8秒未收到AI控制更新、影像或Live失效、手動接管，都會提前停車。" +
+                " 無測距或車端 ACK；請在清空障礙的場地監督使用。", 12);
         root.addView(button("讓 Gemini 看人物方向並走一步（最多 0.5 秒）", v -> {
             if (!gemini.sendText("這是使用者明確要求：請觀察你近期實際看見的車頭 FPV 畫面。" +
                     " 若清楚只有一個人物，呼叫 guide_toward_person 選 left/center/right；" +
@@ -1778,7 +1791,7 @@ public final class MainActivity extends Activity {
                 if (ready != null) return ready;
                 if ("forward".equals(intent) || "forward_continuous".equals(intent)) {
                     aiDriveGoal = "往前探索";
-                    return control.startAiDriveSession(); // full five-second adjustable lease
+                    return control.startAiDriveSession(); // continuous 30-second adjustable session
                 }
                 return control.driveIntent(intent);
             }
@@ -1850,9 +1863,9 @@ public final class MainActivity extends Activity {
                         "person_align_pulses", visionAlign.pulses(),
                         "person_align_status", visionAlign.status(),
                         "person_align_obstacle_avoidance", false,
-                        "voice_drive_intent_long_cruise_available", false,
+                        "voice_drive_intent_long_cruise_available", true,
                         "voice_drive_bounded_continuous_available", true,
-                        "voice_drive_bounded_continuous_ms", DriveIntentPolicy.SUPERVISED_CRUISE_MS,
+                        "voice_drive_bounded_continuous_ms", AiDriveSessionPolicy.MAX_SESSION_MS,
                         "voice_drive_bounded_continuous_video_required", true,
                         "gemini_person_bearing_guidance_available", true,
                         "gemini_person_bearing_step_ms", DriveIntentPolicy.NUDGE_MS,

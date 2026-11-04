@@ -3,7 +3,9 @@ package com.crew.car;
 /**
  * One spoken command -> a conservative on-device motor lease.
  * No depth/odometry/obstacle clearance is measured; this is NOT navigation.
- * Voice 'continuous' means one short, video-fresh lease, never unlimited travel.
+ * This fallback planner only describes bounded one-shot leases. The live
+ * app routes spoken forward / forward_continuous into AiDriveSessionPolicy's
+ * longer Android-owned, FPV-reviewed session instead of using these 5s plans.
  */
 public final class DriveIntentPolicy {
     public static final int NUDGE_MS = 500;

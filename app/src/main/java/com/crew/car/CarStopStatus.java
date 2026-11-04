@@ -10,7 +10,9 @@ public final class CarStopStatus {
         if (reason.contains("AI drive session max duration") ||
                 reason.contains("AI lease expired") ||
                 reason.contains("motor deadline reached before transmit"))
-            return "正常：5 秒行駛時間到";
+            return "正常：30 秒行駛時間到";
+        if (reason.contains("AI drive steering/speed updates stale"))
+            return "AI 控制更新逾時（8 秒未收到修正）";
         if (reason.contains("FPV") || reason.contains("video gate") ||
                 reason.contains("camera/target gate"))
             return "FPV 畫面逾時（不代表 Wi-Fi 斷線）";

@@ -272,23 +272,27 @@ public final class GeminiLive {
             String instruction = "你是 Crew Car 的繁體中文語音遙控助手。單次短移動才使用 drive_intent。" +
                     "短動作每次最多一次；AI Drive Session 的前進油門改由 Android 本地持續維持，" +
                     "你只更新方向與速度，不需要一停一走，也不得自行重新開新 session。" +
-                    "「前進一點」選 forward_small（0.5秒），普通「往前進／前進」啟動一次5秒AI駕駛，" +
-                    "5秒內可以用 adjust_ai_drive_session 控制左右轉、回正、倒退或停止。" +
+                    "「前進一點」選 forward_small（0.5秒），普通「往前進／前進」啟動單次最長30秒的持續AI駕駛，" +
+                    "其間Android馬達不會每5秒停下：你必須依新FPV持續以adjust_ai_drive_session左右轉、回正、倒退、調速或停止。" +
                     "「後退一點」選 backward_small（0.5秒），「倒車」選 backward（0.9秒）。" +
                     "「左前方／右前方」選 front_left/front_right（0.6秒），轉向和油門會一起停止，" +
                     "沒有轉向完畢後繼續直行的尾段；加「一點」才選 _small（0.5秒）。" +
                     "使用者說「持續前進／朝門口開／到桌子附近／開始 AI 駕駛」請呼叫 start_ai_drive_session，" +
                     "把人類指定的門口、桌子等目標放在 goal 參數，作為同一段駕駛任務的方向參考。" +
-                    "Android 本地維持前進油門，每次明確駕駛命令最多5秒；在5秒內可調整方向或切換倒車。" +
-                    "期滿自動停止；沒有下一個明確人類命令不得自行重新啟動。" +
+                    "Android在同一個session內持續送馬達控制封包，單次最長30秒，並非每次更新都重新啟動。" +
+                    "每次收到視覺校驗要求都要呼叫adjust_ai_drive_session，即使不需變更也使用" +
+                    " steering=keep、speed=keep、motion=keep 表明完成新影像觀察；" +
+                    "若8秒內沒有有效控制更新，本地立即停車；30秒屆滿也會停車。" +
+                    "停止後只有新的人類駕駛指令可以重新啟動；禁止自動延長或連續開新session。" +
                     "開始時工具會回 session_id，行駛中以 adjust_ai_drive_session 搭配該 id 修改方向與速度。" +
                     "方向 left/right 每次只修正900毫秒後回正，前進／倒車油門維持；" +
                     "motion 可用 forward/reverse/keep/stop，改向不需重新開始行駛。" +
                     "起步預設 normal（85%原廠油門增益）；slow/normal/fast 分別是70/85/100%，並非量測的 km/h。" +
-                    "Android 會定期要求你重新觀察 FPV，朝人類指定目標調整方向和速度。" +
+                    "Android約每2.5秒要求你重新觀察更新的FPV；依前後畫面中門框或固定背景相對位置，" +
+                    "判斷目前仍在前進或倒退、是否真的轉向，然後朝人類目標調整方向和速度。" +
                     "畫面偶爾模糊、目標暫時離開視野，不要只因不確定就停止；" +
                     "一般可通行路線維持 normal；只有轉彎空間窄或真的需要更謹慎時才切 slow，持續辨識目標，不得假裝已看到目標。" +
-                    "若明顯即將碰撞、使用者說停，或車端連線／影像失效才停止。" +
+                    "若明顯即將碰撞、使用者說停、視野無法安全判斷障礙、或車端連線／影像失效應立即停止。" +
                     "不得自行重新 start、延長本地上限或毫無根據加速。" +
                     "鏡頭沒有可靠距離或障礙物感測，車輛沒有可驗證的安全距離、避障、車端ACK，" +
                     "影像新鮮不代表已經測出距離。朝門口等目標時要低速調整方向，" +
@@ -574,7 +578,8 @@ public final class GeminiLive {
                 String result = listener.onStartAiDriveSession(goal);
                 boolean blocked = result == null || result.startsWith("blocked");
                 return toolStatus(blocked ? "blocked" : "queued",
-                        blocked ? result : "Android queued motor command for up to 5 seconds. " +
+                        blocked ? result : "Android queued continuous motor control for at most 30 seconds, " +
+                                "subject to an 8-second visual-control update watchdog. " +
                                 "Observe subsequent FPV frames to evaluate motion; no car feedback is expected.")
                         .put("session_id", blocked ? 0 : listener.currentAiDriveSessionId())
                         .put("goal", goal)
@@ -620,7 +625,9 @@ public final class GeminiLive {
                         .put("session_id", blocked ? 0 :
                                 (("forward".equals(intent) || "forward_continuous".equals(intent)) ?
                                 listener.currentAiDriveSessionId() : 0))
-                        .put("local_lease_ms", plan.leaseMs)
+                        .put("local_lease_ms",
+                                ("forward".equals(intent) || "forward_continuous".equals(intent)) ?
+                                        AiDriveSessionPolicy.MAX_SESSION_MS : plan.leaseMs)
                         .put("automatic_stop", true)
                         .put("extra_authorization_required", false)
                         .put("manually_armed_required", false)
