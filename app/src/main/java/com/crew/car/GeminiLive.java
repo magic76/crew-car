@@ -549,8 +549,7 @@ public final class GeminiLive {
                 String motion = args == null ? "keep" : args.optString("motion", "keep");
                 if (!AiDriveSessionPolicy.validSteering(steering) ||
                         !AiDriveSessionPolicy.validSpeed(speed) ||
-                        (!"keep".equals(motion) && !"forward".equals(motion) &&
-                         !"reverse".equals(motion) && !"stop".equals(motion)))
+                        !AiDriveSessionPolicy.validMotion(motion))
                     return toolStatus("blocked", "invalid steering, speed or motion; no movement");
                 String result = listener.onAdjustAiDriveSession(sessionId, steering, speed, motion);
                 boolean blocked = result == null || result.startsWith("blocked");
