@@ -5,8 +5,10 @@ import static org.junit.Assert.*;
 
 public final class CarStopStatusTest {
     @Test public void distinguishesNormalExpiryFromRealDisconnection() {
-        assertEquals("正常：5 秒行駛時間到",
+        assertEquals("正常：30 秒行駛時間到",
                 CarStopStatus.label("AI drive session max duration"));
+        assertEquals("AI 控制更新逾時（8 秒未收到修正）",
+                CarStopStatus.label("AI drive steering/speed updates stale"));
         assertEquals("FPV 畫面逾時（不代表 Wi-Fi 斷線）",
                 CarStopStatus.label("AI FPV video queue stale"));
         assertEquals("車子 Wi-Fi 連線已失去",
