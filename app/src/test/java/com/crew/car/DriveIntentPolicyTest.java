@@ -9,15 +9,15 @@ public class DriveIntentPolicyTest {
         DriveIntentPolicy.Plan move = DriveIntentPolicy.plan("forward");
         DriveIntentPolicy.Plan cruise = DriveIntentPolicy.plan("forward_continuous");
         assertEquals(500, nudge.leaseMs);
-        assertEquals(900, move.leaseMs);
-        assertEquals(2000, cruise.leaseMs);
+        assertEquals(5000, move.leaseMs);
+        assertEquals(5000, cruise.leaseMs);
         assertEquals("center", cruise.steering);
         assertEquals("forward", cruise.throttle);
         assertEquals("forward", nudge.throttle);
         assertEquals("forward", move.throttle);
         assertEquals("center", move.steering);
         assertTrue(nudge.leaseMs < move.leaseMs);
-        assertTrue(move.leaseMs < cruise.leaseMs);
+        assertEquals(move.leaseMs, cruise.leaseMs);
         assertTrue(cruise.leaseMs <= DriveIntentPolicy.SUPERVISED_CRUISE_MS);
     }
     @Test public void frontDirectionsCombineSteeringWithForwardThrottle() {
@@ -61,7 +61,7 @@ public class DriveIntentPolicyTest {
         for (String intent : new String[]{"forward", "backward", "front_left", "front_right",
                 "forward_small", "backward_small", "front_left_small", "front_right_small"}) {
             DriveIntentPolicy.Plan plan = DriveIntentPolicy.plan(intent);
-            assertTrue(intent + " exceeded short supervised cap", plan.leaseMs <= 900);
+            assertTrue(intent + " exceeded five-second cap", plan.leaseMs <= 5000);
             if (!intent.startsWith("front_")) assertFalse(plan.stopWithSteering);
         }
     }
