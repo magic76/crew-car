@@ -584,8 +584,7 @@ public final class CarControl {
      */
     public synchronized String adjustAiDrive(long sessionId, String steering, String pace,
                                              String motion) {
-        if (!"keep".equals(motion) && !"forward".equals(motion) &&
-                !"reverse".equals(motion) && !"stop".equals(motion))
+        if (!AiDriveSessionPolicy.validMotion(motion))
             return "blocked: motion must be keep/forward/reverse/stop";
         // A STOP request must always work, even if live video is stale.
         if ("stop".equals(motion)) {
@@ -623,8 +622,7 @@ public final class CarControl {
                 return;
             }
             aiSteer = AiDriveSessionPolicy.steering(steering, aiSteer);
-            if ("forward".equals(motion)) aiThrottle = 1;
-            else if ("reverse".equals(motion)) aiThrottle = -1;
+            aiThrottle = AiDriveSessionPolicy.throttleFor(motion, aiThrottle);
             aiDriveSpeedGain = AiDriveSessionPolicy.speedGain(pace, aiDriveSpeedGain);
             if (!"keep".equals(steering)) {
                 aiSteerReleaseAt = aiSteer == 0 ? 0 :
