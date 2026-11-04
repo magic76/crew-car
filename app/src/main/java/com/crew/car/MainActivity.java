@@ -581,8 +581,9 @@ public final class MainActivity extends Activity {
                 log.i("CAM", "TextureView destroyed; suspending camera");
                 if (currentCameraAdapter == 0) {
                     stopCameraReceiver();
-                    if (control != null) control.disarm();
-                    if (arm != null) uncheck();
+                    // FPV surface recreation must STOP AI motion but not lock
+                    // the unrelated physical manual pad until a hidden re-arm.
+                    if (control != null) control.emergencyStop("FPV preview surface recreated");
                 }
                 return true;
             }
