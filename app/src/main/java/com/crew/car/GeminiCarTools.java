@@ -79,7 +79,7 @@ public final class GeminiCarTools {
                 "Gemini reviews recent FPV image to change steering and/or relative throttle gain " +
                 "independently. steering = left/right/center/keep; left/right is a SHORT 900ms " +
                 "correction that auto-centers, while FORWARD THROTTLE KEEPS GOING. " +
-                "speed = slow/normal/fast/keep (bounded 50/65/80% OEM gain, NOT km/h). " +
+                "speed = slow/normal/fast/keep (bounded 70/85/100% OEM gain, NOT km/h). " +
                 "motion = keep/forward/reverse/stop. You CAN reverse or stop within 5 seconds " +
                 "without waiting for a new speech turn. Never assume a queued tool has vehicle ACK. " +
                 "To decide turning, use recent FPV image coordinates: locate intended opening " +
@@ -88,8 +88,8 @@ public final class GeminiCarTools {
                 "choose right, otherwise center. An open doorway is the gap between doorposts; " +
                 "the nearest wall edge is NOT the steering target. After each correction, compare " +
                 "the opening center or stationary background across two different FPV frames. " +
-                "If visibility temporarily unclear use slow/center/keep, not fabricated confidence. " +
-                "If the goal briefly leaves the image or framing is poor, use slow and keep/center " +
+                "When path looks navigable prefer normal speed (85% OEM gain); use slow only for tight turns or actual uncertainty, not as the permanent default. " +
+                "If the goal briefly leaves the image or framing is poor, adjust steering and use slow only if needed; use keep/center " +
                 "to continue observing; do not stop simply because certainty is imperfect. " +
                 "When a collision is clearly imminent, human STOP is requested, or link is lost, stop_car. " +
                 "No measured depth or ACK; never self-restart an expired session.");
@@ -116,8 +116,10 @@ public final class GeminiCarTools {
                 "adjustable at any time DURING the window using adjust_ai_drive_session " +
                 "and the exact session_id. Do not demand a separate " +
                 "UI unlock, but Android must verify WL car Wi-Fi and foreground Live. " +
-                "Temporary image uncertainty is NOT itself grounds for STOP: use slow, " +
-                "keep/center and continue to look for the goal. STOP for explicit command, " +
+                "Temporary image uncertainty is NOT itself grounds for STOP: prefer normal " +
+                "gain (85%) when the route looks navigable, and use slow (70%) only for tight " +
+                "corners or when genuinely needed; adjust keep/center and keep observing. " +
+                "STOP for explicit command, " +
                 "imminent collision, camera/Live/Wi-Fi failure, manual takeover or 5-second expiry. " +
                 "This is not verified navigation, distance sensing or obstacle avoidance. " +
                 "Never restart an expired session automatically.");

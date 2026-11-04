@@ -102,7 +102,7 @@ public final class MainActivity extends Activity {
                             "請用新舊畫面中固定背景的相對位置驗證轉彎是否有效，" +
                             "不可等待不存在的車端ACK，也不用語音反覆報告沒收到回應。" +
                             "方向修正900ms後回正，油門仍保持；不要重新啟動 session。" +
-                            "暫時看不清目標時以 slow 加 keep/center 繼續觀察，不要僅因不確定就停車。" +
+                            "普通可通行路線維持 normal（85%增益）；僅在轉彎狹窄或需要減速時用 slow（70%），不要一直預設慢速；暫時看不清目標也不要僅因此停車。" +
                             " 若確實看到即將碰撞，呼叫 stop_car。不可假稱看見目標。" +
                             " 沒有測距、避障能力或抵達確認，回覆簡短。";
                     if (gemini.sendText(review)) {
@@ -904,7 +904,7 @@ public final class MainActivity extends Activity {
             }
             updateLockButton();
         });
-        label(root, "直接說「朝門口開／持續前進」，不需額外按解鎖；Android 持續送油門封包。" +
+        label(root, "直接說「朝門口開／持續前進」，不需額外按解鎖；Android 持續送油門封包（起步85%原廠增益）。" +
                 " Gemini 依車頭影像調整方向與相對增益，單次5秒；可在5秒內倒退或停車。" +
                 " 手動接管、明確停車、Live／車 Wi-Fi 或影像中斷會停止。沒有測距、避障或車端 ACK。", 12);
 
@@ -944,7 +944,7 @@ public final class MainActivity extends Activity {
             if (!gemini.sendText(prompt.getText().toString())) log.e("LIVE", "請先連線 Gemini");
             else log.i("LIVE", "text turn sent (content redacted)");
         }), new LinearLayout.LayoutParams(-1, dp(50)));
-        label(root, "語音「朝門口開／開始 AI 駕駛」：Android 維持低速油門，Gemini 約每2.5秒" +
+        label(root, "語音「朝門口開／開始 AI 駕駛」：Android 預設一般油門85%原廠增益，Gemini 約每1.5秒" +
                 " 根據 FPV 朝目標修正方向。目標暫時離開畫面可低速觀察；單次5秒。" +
                 " 使用者停車、手動接管或失去連線／影像仍會停。無測距或車端 ACK。", 12);
         root.addView(button("讓 Gemini 看人物方向並走一步（最多 0.5 秒）", v -> {

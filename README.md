@@ -255,3 +255,9 @@ The **manual driving pad can arm the car on first physical touch** when the WL W
 Gemini no longer expects a physical motor ACK (the toy RC protocol does not provide one); it checks successive FPV frames for visual evidence of movement and adjusts steering toward the **center of a visible doorway**. Images are already compressed; this version reduces JPEG to **448px longest edge at quality 60, at most 1 FPS**, and logs compression time / bytes / WebSocket queue occupancy for tuning.
 
 Emergency STOP, manual override, stale FPV/Live/Wi-Fi checks and the bounded five-second motor deadline remain. **No speed, distance, odometry or obstacle telemetry is available.** See [acceptance checklist](docs/FPV_FIVE_SECOND_DRIVE_QA.md).
+
+## v0.1.32 — Faster AI throttle gains
+
+Previously AI drive sessions always **started at slow / 50% OEM throttle command amplitude** and only offered slow/normal/fast gains of **50/65/80%**. In v0.1.32, all new AI drive sessions start at **normal / 85%**, and Gemini can choose **slow=70%, normal=85%, fast=100%**. Routine navigable FPV scenes should keep normal instead of reverting to slow on every review. The existing user-selected motor tuning remains a ceiling: the actual encoded throttle gain is `min(AI speed gain, configured tuning.throttlePercent)`. The 5-second motor deadline, user STOP, manual priority and Live/FPV/Wi-Fi watchdog are unchanged.
+
+These percentages scale the **WLtoys throttle control-byte displacement from neutral**, not the observed physical speed in cm/s or a verified velocity percentage. Test on the toy car; a low-gain setting can be insufficient to overcome motor dead zone. For a self-selected throttle ceiling below 85%, first adjust the App's **control tuning**; the AI will not exceed it.

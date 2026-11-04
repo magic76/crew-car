@@ -53,7 +53,7 @@ public final class CarControl {
     /** Session ownership persists while steering changes; throttle never toggles to STOP on a turn. */
     private volatile boolean aiDriveSessionPending, aiDriveSessionActive;
     private volatile long aiDriveSessionId, aiDriveSessionStartedAt, aiDriveSessionLastControlAt;
-    private volatile int aiDriveSpeedGain = AiDriveSessionPolicy.SLOW_GAIN;
+    private volatile int aiDriveSpeedGain = AiDriveSessionPolicy.NORMAL_GAIN;
     private long aiDriveSessionSequence;
     private volatile long lastAiSafetyCheckAt;
     private final AtomicLong motionEpoch = new AtomicLong();
@@ -558,7 +558,7 @@ public final class CarControl {
             aiDriveSessionId = sessionId;
             aiDriveSessionStartedAt = now;
             aiDriveSessionLastControlAt = now;
-            aiDriveSpeedGain = AiDriveSessionPolicy.SLOW_GAIN;
+            aiDriveSpeedGain = AiDriveSessionPolicy.NORMAL_GAIN;
             aiSteer = 0;
             aiThrottle = 1;
             aiSteerReleaseAt = 0;
@@ -574,7 +574,7 @@ public final class CarControl {
                     " video watchdog on, motor unacknowledged");
         });
         return "queued AI Drive Session id=" + sessionId +
-                ", initial slow forward for " + AiDriveSessionPolicy.MAX_SESSION_MS +
+                ", initial normal forward for " + AiDriveSessionPolicy.MAX_SESSION_MS +
                 "ms; steer/reverse/STOP allowed before expiry; no device ACK";
     }
 
@@ -841,7 +841,7 @@ public final class CarControl {
         aiDriveSessionPending = false;
         aiDriveSessionActive = false;
         aiDriveSessionId = 0;
-        aiDriveSpeedGain = AiDriveSessionPolicy.SLOW_GAIN;
+        aiDriveSpeedGain = AiDriveSessionPolicy.NORMAL_GAIN;
         aiSteer = 0;
         aiThrottle = 0;
         motionEpoch.incrementAndGet();
@@ -876,7 +876,7 @@ public final class CarControl {
         aiDriveSessionPending = false;
         aiDriveSessionActive = false;
         aiDriveSessionId = 0;
-        aiDriveSpeedGain = AiDriveSessionPolicy.SLOW_GAIN;
+        aiDriveSpeedGain = AiDriveSessionPolicy.NORMAL_GAIN;
         aiSteer = 0;
         aiThrottle = 0;
         active = "stop";

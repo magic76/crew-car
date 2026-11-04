@@ -252,10 +252,10 @@ public final class GeminiLive {
                     "開始時工具會回 session_id，行駛中以 adjust_ai_drive_session 搭配該 id 修改方向與速度。" +
                     "方向 left/right 每次只修正900毫秒後回正，前進／倒車油門維持；" +
                     "motion 可用 forward/reverse/keep/stop，改向不需重新開始行駛。" +
-                    "速度 slow/normal/fast 分別是原廠增益的50/65/80%，並非量測的 km/h。" +
+                    "起步預設 normal（85%原廠油門增益）；slow/normal/fast 分別是70/85/100%，並非量測的 km/h。" +
                     "Android 會定期要求你重新觀察 FPV，朝人類指定目標調整方向和速度。" +
                     "畫面偶爾模糊、目標暫時離開視野，不要只因不確定就停止；" +
-                    "優先保持 slow 與 keep/center，持續嘗試辨識目標，不得假裝已看到目標。" +
+                    "一般可通行路線維持 normal；只有轉彎空間窄或真的需要更謹慎時才切 slow，持續辨識目標，不得假裝已看到目標。" +
                     "若明顯即將碰撞、使用者說停，或車端連線／影像失效才停止。" +
                     "不得自行重新 start、延長本地上限或毫無根據加速。" +
                     "鏡頭沒有可靠距離或障礙物感測，車輛沒有可驗證的安全距離、避障、車端ACK，" +

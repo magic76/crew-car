@@ -41,6 +41,24 @@ public final class WltoysProtocolTest {
         }
     }
 
+    @Test public void aiDrivingGainLevelsIncreaseWlThrottleBytes() {
+        int[] gains = {AiDriveSessionPolicy.SLOW_GAIN,
+                AiDriveSessionPolicy.NORMAL_GAIN,
+                AiDriveSessionPolicy.FAST_GAIN};
+        int[] expectedForwardBytes = {149, 154, 158};
+        for (int i = 0; i < gains.length; i++) {
+            CarTuning tuning = new CarTuning(50, 65, gains[i]);
+            byte[] bytes = WltoysProtocol.control(0, 1, tuning);
+            assertEquals(expectedForwardBytes[i], bytes[10] & 0xff);
+            assertEquals((bytes[9] ^ bytes[10] ^ bytes[11]) & 255, bytes[14] & 255);
+        }
+    }
+
+    @Test public void aiGainDoesNotOverrideUserThrottleCap() {
+        CarTuning limited = new CarTuning(50, 65, Math.min(60, AiDriveSessionPolicy.FAST_GAIN));
+        assertEquals(146, WltoysProtocol.control(0, 1, limited)[10] & 0xff);
+    }
+
     @Test public void videoHandshakeSequences() {
         assertEquals(16, CommandCodec.encode(WltoysProtocol.CAMERA_START_HEX, true).length);
         assertEquals(14, CommandCodec.encode(WltoysProtocol.CAMERA_STOP_HEX, true).length);
