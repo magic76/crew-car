@@ -40,7 +40,7 @@ public final class GeminiLive {
         void onStatus(String value);
         String onDrive(String direction, int milliseconds);
         String onDriveIntent(String intent);
-        String onStartAiDriveSession();
+        String onStartAiDriveSession(String goal);
         String onAdjustAiDriveSession(long sessionId, String steering, String speed);
         long currentAiDriveSessionId();
         String onGuideTowardPerson(String bearing);
@@ -244,19 +244,24 @@ public final class GeminiLive {
                     "「後退一點」選 backward_small（0.5秒），「倒車」選 backward（0.9秒）。" +
                     "「左前方／右前方」選 front_left/front_right（0.6秒），轉向和油門會一起停止，" +
                     "沒有轉向完畢後繼續直行的尾段；加「一點」才選 _small（0.5秒）。" +
-                    "使用者明確說「持續前進／一邊前進一邊轉彎／開始 AI 駕駛」請呼叫 start_ai_drive_session。" +
-                    "它在 Android 上持續送低速前進油門，最多30秒，直至急停、影像/Live中斷、控制更新超過8.5秒或期限到。" +
+                    "使用者說「持續前進／朝門口開／到桌子附近／開始 AI 駕駛」請呼叫 start_ai_drive_session，" +
+                    "把人類指定的門口、桌子等目標放在 goal 參數，作為同一段駕駛任務的方向參考。" +
+                    "Android 本地維持前進油門，最多120秒；若使用者喊停、斷線、影像中斷或30秒沒有控制更新則停止。" +
                     "開始時工具會回 session_id，行駛中以 adjust_ai_drive_session 搭配該 id 修改方向與速度。" +
                     "方向 left/right 每次只修正900毫秒，然後方向回正，油門不會中斷；" +
                     "速度 slow/normal/fast 分別是原廠增益的50/65/80%，並非量測的 km/h。" +
-                    "Android 會定期要求你重新觀察 FPV，若畫面清楚且前方空曠才回覆方向/速度更新。" +
-                    "若不明確、辨識不到人物、畫面顯示障礙物或無法確認安全，必須呼叫 stop_car，不可猜。" +
-                    "不得自行再 start 下一段 session、不得延長截止時間、不得盲目連續加速。" +
+                    "Android 會定期要求你重新觀察 FPV，朝人類指定目標調整方向和速度。" +
+                    "畫面偶爾模糊、目標暫時離開視野，不要只因不確定就停止；" +
+                    "優先保持 slow 與 keep/center，持續嘗試辨識目標，不得假裝已看到目標。" +
+                    "若明顯即將碰撞、使用者說停，或車端連線／影像失效才停止。" +
+                    "不得自行重新 start、延長本地上限或毫無根據加速。" +
                     "鏡頭沒有可靠距離或障礙物感測，車輛沒有可驗證的安全距離、避障、車端ACK，" +
-                    "即使影像新鮮也不能保證安全；靠近牆壁或障礙物時請停止移動。" +
-                    "仍須人類在 App 解鎖與現場監督，使用者說停立刻 stop_car、說鎖車立刻 lock_car。" +
+                    "影像新鮮不代表已經測出距離。朝門口等目標時要低速調整方向，" +
+                    "不要把畫面裡有牆就視為必須停車；只有明顯即將碰撞才主動停止。" +
+                    "使用者明確發出駕駛指令後，Android 驗證車型與連線並自動啟用控制，不需要先點擊解鎖。" +
+                    " 使用者說停應立即 stop_car；Live 或車 Wi-Fi 中斷由 Android 停止。" +
                     "不需額外 8／20 秒授權；工具 queued 不能當作車輛已經移動。" +
-                    "若不確定方向先詢問；不自行猜測位置、距離、目標是否抵達。" +
+                    "只依照確實看見的畫面推估方向；未看到目標時持續低速觀察，不要猜測距離或宣稱抵達。" +
                     "使用者說「朝著那個人走／往前面的人方向走」，優先使用 guide_toward_person：" +
                     "依你真正可見的近期車頭 FPV 畫面判斷單一人物在左、中、右。" +
                     "這個一次移動工具不依賴 Android MediaPipe 人框，不用人先點框，但只能移動一次0.5秒；" +
@@ -517,11 +522,13 @@ public final class GeminiLive {
                         .put("motion_verified", false);
             }
             case "start_ai_drive_session": {
-                String result = listener.onStartAiDriveSession();
+                String goal = args == null ? "" : args.optString("goal", "");
+                String result = listener.onStartAiDriveSession(goal);
                 boolean blocked = result == null || result.startsWith("blocked");
                 return toolStatus(blocked ? "blocked" : "queued",
                         result == null ? "no result" : result)
                         .put("session_id", blocked ? 0 : listener.currentAiDriveSessionId())
+                        .put("goal", goal)
                         .put("max_session_ms", AiDriveSessionPolicy.MAX_SESSION_MS)
                         .put("steering_preserves_throttle", true)
                         .put("visual_review_required", true)

@@ -78,8 +78,10 @@ public final class GeminiCarTools {
                 "independently. steering = left/right/center/keep; left/right is a SHORT 900ms " +
                 "correction that auto-centers, while FORWARD THROTTLE KEEPS GOING. " +
                 "speed = slow/normal/fast/keep (bounded 50/65/80% OEM gain, NOT km/h). " +
-                "If unsafe, unclear obstacles, or person too close, call stop_car instead. " +
-                "Never extend or auto-restart a finished session; no measured depth or ACK.");
+                "If the goal briefly leaves the image or framing is poor, use slow and keep/center " +
+                "to continue observing; do not stop simply because certainty is imperfect. " +
+                "When a collision is clearly imminent, human STOP is requested, or link is lost, stop_car. " +
+                "No measured depth or ACK; never self-restart an expired session.");
         adjust.getJSONObject("parameters")
                 .put("properties", new JSONObject()
                         .put("session_id", new JSONObject().put("type", "INTEGER")
@@ -93,17 +95,26 @@ public final class GeminiCarTools {
                 .put("required", new JSONArray().put("session_id")
                         .put("steering").put("speed"));
 
+        JSONObject goalStart = action("start_ai_drive_session",
+                "Start a locally controlled driving session on explicit human voice request: " +
+                "'朝門口開/開到桌子附近/持續前進'. Capture the user destination in goal. " +
+                "Once active, independently adjust steering and bounded throttle using " +
+                "adjust_ai_drive_session with the exact session_id. Do not demand a separate " +
+                "UI unlock, but Android must verify WL car Wi-Fi and foreground Live. " +
+                "Temporary image uncertainty is NOT itself grounds for STOP: use slow, " +
+                "keep/center and continue to look for the goal. STOP for explicit command, " +
+                "imminent collision, camera/Live/Wi-Fi failure, manual takeover or local expiry. " +
+                "This is not verified navigation, distance sensing or obstacle avoidance. " +
+                "Never restart an expired session automatically.");
+        goalStart.getJSONObject("parameters")
+                .put("properties", new JSONObject()
+                        .put("goal", new JSONObject().put("type", "STRING")
+                                .put("description", "Human-requested destination, e.g. 門口, 桌子; " +
+                                        "use 往前探索 if the user named no destination")));
+
         return new JSONArray()
                 .put(intent)
-                .put(action("start_ai_drive_session",
-                        "For explicit human request '持續往前走/開始 AI 駕駛/邊走邊調整方向'. " +
-                        "Human MUST manually arm car; start from stationary WL car in open area, " +
-                        "with fresh FPV/Gemini video. Android sends slow forward throttle CONTINUOUSLY " +
-                        "while session active, capped at 30 seconds, also stops on stale video, " +
-                        "no Gemini speed/steering updates for 8.5s, manual control or STOP. " +
-                        "Return session_id for subsequent adjust_ai_drive_session. " +
-                        "This is NOT guaranteed obstacle avoidance or autonomous navigation. " +
-                        "Never start a second session automatically."))
+                .put(goalStart)
                 .put(adjust)
                 .put(bearing)
                 .put(action("align_selected_person",
@@ -116,8 +127,6 @@ public final class GeminiCarTools {
                         "Human must unlock and supervise; if blocked ask human to select a person."))
                 .put(action("stop_car",
                         "Immediately request neutral STOP even if locked; do not claim car ACK."))
-                .put(action("lock_car",
-                        "Disarm motor and send STOP; only physical app UI can unlock."))
                 .put(action("get_car_status",
                         "Read Android motor ownership/status, not physical car position or telemetry."))
                 .put(action("get_camera_status",
