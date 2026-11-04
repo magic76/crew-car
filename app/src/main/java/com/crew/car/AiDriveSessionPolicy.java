@@ -6,10 +6,10 @@ package com.crew.car;
  * gains, NOT measured speed or safe stopping distances.
  */
 public final class AiDriveSessionPolicy {
-    public static final int MAX_SESSION_MS = 120_000;
-    public static final int STALE_CONTROL_MS = 30_000;
+    public static final int MAX_SESSION_MS = 5_000;
+    public static final int STALE_CONTROL_MS = 5_000;
     public static final int STEERING_HOLD_MS = 900;
-    public static final int VIDEO_REVIEW_INTERVAL_MS = 2_500;
+    public static final int VIDEO_REVIEW_INTERVAL_MS = 1_500;
     public static final int SLOW_GAIN = 50;
     public static final int NORMAL_GAIN = 65;
     public static final int FAST_GAIN = 80;
