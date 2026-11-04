@@ -2,7 +2,7 @@ package com.crew.car;
 
 /**
  * Prevents overlapping Live visual-review turns. The motor ticker never waits
- * on this state: it keeps its own absolute five-second STOP deadline.
+ * on this state: it keeps its own absolute thirty-second STOP deadline.
  *
  * Caller also enforces FIRST_REVIEW_DELAY_MS / MIN_REVIEW_INTERVAL_MS.
  * This class only grants one pending cloud review at a time.
@@ -27,7 +27,7 @@ public final class DriveReviewGate {
                 return false;
             }
             // The pending model response never arrived. Avoid deadlock while
-            // keeping a strictly bounded number of requests per 5s session.
+            // keeping a strictly bounded number of requests per 30s session.
             expiredCount++;
             pendingSessionId = 0;
         }
