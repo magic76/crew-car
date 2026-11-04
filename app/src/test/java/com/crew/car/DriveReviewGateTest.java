@@ -6,6 +6,7 @@ import static org.junit.Assert.*;
 public final class DriveReviewGateTest {
     @Test public void blocksOverlappingRequestsUntilMatchingToolOrTurnComplete() {
         DriveReviewGate gate = new DriveReviewGate();
+        assertEquals(2500, DriveReviewGate.MIN_REVIEW_INTERVAL_MS);
         assertTrue(gate.begin(10, 1000));
         assertFalse(gate.begin(10, 1500));
         assertFalse(gate.begin(11, 1700));
