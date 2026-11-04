@@ -581,7 +581,7 @@ public final class CarControl {
                     " video watchdog on, motor unacknowledged");
         });
         return "queued AI Drive Session id=" + sessionId +
-                ", initial normal forward for " + AiDriveSessionPolicy.MAX_SESSION_MS +
+                ", initial normal forward for up to " + AiDriveSessionPolicy.MAX_SESSION_MS +
                 "ms; steer/reverse/STOP allowed before expiry; no device ACK";
     }
 
@@ -647,7 +647,8 @@ public final class CarControl {
                     " gain=" + aiDriveSpeedGain + " leaseRemainingMs=" +
                     Math.max(0, deadline - now) + " no car ACK");
         });
-        return "queued steering/throttle/speed update, 5s deadline unchanged; verify FPV not car ACK";
+        return "queued steering/throttle/speed update, 30s absolute deadline unchanged; " +
+                "watchdog requires fresh model updates; verify motion via FPV (no car ACK)";
     }
 
     /** One 500ms step from a Gemini-proposed person bearing; no autonomous chaining. */
