@@ -20,6 +20,13 @@ public final class AiDriveSessionPolicyTest {
         assertEquals(-1, AiDriveSessionPolicy.steering("keep", -1));
         assertFalse(AiDriveSessionPolicy.validSteering("spin"));
         assertFalse(AiDriveSessionPolicy.validSpeed("reverse"));
+        assertTrue(AiDriveSessionPolicy.validMotion("reverse"));
+        assertTrue(AiDriveSessionPolicy.validMotion("stop"));
+        assertFalse(AiDriveSessionPolicy.validMotion("turn-around"));
+        assertEquals(-1, AiDriveSessionPolicy.throttleFor("reverse", 1));
+        assertEquals(1, AiDriveSessionPolicy.throttleFor("forward", -1));
+        assertEquals(1, AiDriveSessionPolicy.throttleFor("keep", 1));
+        assertEquals(0, AiDriveSessionPolicy.throttleFor("stop", 1));
     }
 
     @Test public void staleControlAndAbsoluteDeadlineFailClosed() {
