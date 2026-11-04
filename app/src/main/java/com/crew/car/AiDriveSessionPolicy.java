@@ -26,6 +26,22 @@ public final class AiDriveSessionPolicy {
                 "fast".equals(speed) || "keep".equals(speed);
     }
 
+    public static boolean validMotion(String motion) {
+        return "keep".equals(motion) || "forward".equals(motion) ||
+                "reverse".equals(motion) || "stop".equals(motion);
+    }
+
+    /** Relative throttle direction only; STOP is applied via emergencyStop. */
+    public static int throttleFor(String motion, int previous) {
+        if (!validMotion(motion)) throw new IllegalArgumentException("invalid motion");
+        switch (motion) {
+            case "forward": return 1;
+            case "reverse": return -1;
+            case "stop": return 0;
+            default: return previous;
+        }
+    }
+
     public static int steering(String direction, int previous) {
         if (!validSteering(direction)) throw new IllegalArgumentException("invalid steering");
         switch (direction) {
