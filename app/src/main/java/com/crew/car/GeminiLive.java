@@ -532,7 +532,7 @@ public final class GeminiLive {
                 String result = listener.onStartAiDriveSession(goal);
                 boolean blocked = result == null || result.startsWith("blocked");
                 return toolStatus(blocked ? "blocked" : "queued",
-                        blocked ? result : "Android accepted command for up to 5 seconds. " +
+                        blocked ? result : "Android queued motor command for up to 5 seconds. " +
                                 "Observe subsequent FPV frames to evaluate motion; no car feedback is expected.")
                         .put("session_id", blocked ? 0 : listener.currentAiDriveSessionId())
                         .put("goal", goal)
@@ -581,7 +581,7 @@ public final class GeminiLive {
                         .put("local_lease_ms", plan.leaseMs)
                         .put("automatic_stop", true)
                         .put("extra_authorization_required", false)
-                        .put("manually_armed_required", true)
+                        .put("manually_armed_required", false)
                         .put("distance_measured", false)
                         .put("obstacle_clearance_verified", false)
                         .put("device_acknowledged", false)
