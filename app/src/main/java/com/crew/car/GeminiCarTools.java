@@ -6,7 +6,7 @@ import org.json.JSONObject;
 
 /**
  * One advertised movement tool avoids confusing 500ms tap, target-approach
- * approval and 15s cruise. STOP/lock always remain separately callable.
+ * approval and continuous 30s supervised driving. STOP remains separately callable.
  * Legacy tool handlers are retained locally for protocol compatibility but
  * are intentionally NOT declared to new Gemini Live sessions.
  */
