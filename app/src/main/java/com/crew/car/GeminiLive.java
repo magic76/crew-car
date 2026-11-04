@@ -149,9 +149,10 @@ public final class GeminiLive {
             log.e("AI_REVIEW", "visual review WebSocket enqueue rejected");
             return false;
         }
+        WebSocket current = socket;
         log.i("AI_REVIEW", "review queued id=" + sessionId +
                 " pendingAgeMs=" + driveReviewPendingAgeMs() +
-                " wsQueueBytes=" + socket.queueSize());
+                " wsQueueBytes=" + (current == null ? -1 : current.queueSize()));
         return true;
     }
 
