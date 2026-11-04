@@ -532,13 +532,14 @@ public final class GeminiLive {
                 String result = listener.onStartAiDriveSession(goal);
                 boolean blocked = result == null || result.startsWith("blocked");
                 return toolStatus(blocked ? "blocked" : "queued",
-                        result == null ? "no result" : result)
+                        blocked ? result : "Android accepted command for up to 5 seconds. " +
+                                "Observe subsequent FPV frames to evaluate motion; no car feedback is expected.")
                         .put("session_id", blocked ? 0 : listener.currentAiDriveSessionId())
                         .put("goal", goal)
                         .put("max_session_ms", AiDriveSessionPolicy.MAX_SESSION_MS)
                         .put("steering_preserves_throttle", true)
                         .put("visual_review_required", true)
-                        .put("device_acknowledged", false)
+                        .put("visual_verification_source", "subsequent_FPV_frames")
                         .put("obstacle_clearance_verified", false);
             }
             case "adjust_ai_drive_session": {
@@ -555,14 +556,15 @@ public final class GeminiLive {
                 boolean blocked = result == null || result.startsWith("blocked");
                 boolean stopped = result != null && result.startsWith("stopped");
                 return toolStatus(blocked ? "blocked" : stopped ? "requested" : "queued",
-                        result == null ? "no result" : result)
+                        blocked ? result : stopped ? "Android STOP requested." :
+                                "Android updated steering/motion. Compare later FPV frames to assess effect.")
                         .put("session_id", sessionId)
                         .put("motion", motion)
                         .put("session_extended", false)
                         .put("throttle_kept_on_during_turn", !blocked)
                         .put("steering_correction_ms", AiDriveSessionPolicy.STEERING_HOLD_MS)
                         .put("no_measured_speed_or_distance", true)
-                        .put("device_acknowledged", false);
+                        .put("visual_verification_source", "subsequent_FPV_frames");
             }
             case "drive_intent": {
                 String intent = args == null ? "" : args.optString("intent", "");
