@@ -583,7 +583,7 @@ public final class MainActivity extends Activity {
                     stopCameraReceiver();
                     // FPV surface recreation must STOP AI motion but not lock
                     // the unrelated physical manual pad until a hidden re-arm.
-                    if (control != null) control.emergencyStop("FPV preview surface recreated");
+                    if (control != null) control.emergencyStop();
                 }
                 return true;
             }
