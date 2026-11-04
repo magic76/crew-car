@@ -82,18 +82,26 @@ public final class MainActivity extends Activity {
                 long sessionId = control.aiDriveSessionId();
                 if (sessionId != lastAiDriveReviewSessionId) {
                     lastAiDriveReviewSessionId = sessionId;
-                    lastAiDriveReviewPromptAt = now;
+                    // Ask for the first FPV correction after ~0.7s rather than
+                    // spending half the 5s lease waiting for the first prompt.
+                    lastAiDriveReviewPromptAt = now -
+                            AiDriveSessionPolicy.VIDEO_REVIEW_INTERVAL_MS + 700;
                 } else if (now - lastAiDriveReviewPromptAt >=
                         AiDriveSessionPolicy.VIDEO_REVIEW_INTERVAL_MS &&
-                        gemini.ready() && !gemini.assistantSpeaking() &&
+                        gemini.ready() &&
                         gemini.liveVideoAgeMs() >= 0 && gemini.liveVideoAgeMs() <= 5000 &&
                         cameraAgeMs() >= 0 && cameraAgeMs() <= 5000) {
                     lastAiDriveReviewPromptAt = now;
                     String review = "Crew Car Android 本地 AI Drive Session id=" + sessionId +
                             " 正朝目標「" + aiDriveGoal + "」持續行駛。請觀察近期 FPV，" +
                             "朝此目標決定一次 adjust_ai_drive_session，帶相同 session_id。" +
-                            " steering 用 left/right/center/keep，speed 用 slow/normal/fast/keep。" +
-                            "方向修正會在900ms後回正，但前進油門不中斷；不要重新啟動 session。" +
+                            " 看車頭畫面：先判斷門框/通道兩側之間的開口中心，在影像左側就短左修正，" +
+                            "右側就短右修正，接近中央則回正。不要只因看到牆就停止。" +
+                            " steering 用 left/right/center/keep，speed 用 slow/normal/fast/keep，" +
+                            " motion 用 keep/forward/reverse/stop。可以在剩餘5秒內改倒車或停止。" +
+                            "請用新舊畫面中固定背景的相對位置驗證轉彎是否有效，" +
+                            "不可等待不存在的車端ACK，也不用語音反覆報告沒收到回應。" +
+                            "方向修正900ms後回正，油門仍保持；不要重新啟動 session。" +
                             "暫時看不清目標時以 slow 加 keep/center 繼續觀察，不要僅因不確定就停車。" +
                             " 若確實看到即將碰撞，呼叫 stop_car。不可假稱看見目標。" +
                             " 沒有測距、避障能力或抵達確認，回覆簡短。";
@@ -121,7 +129,9 @@ public final class MainActivity extends Activity {
                 else if (control.visionFollowActive())
                     aiDriveStatus.setText("跟隨人物中 · 最多 8 秒 · 可按急停");
                 else if (control.aiDriveSessionActive())
-                    aiDriveStatus.setText("AI 駕駛：前進 " + control.aiDriveSpeedGain() +
+                    aiDriveStatus.setText("AI 駕駛：" +
+                            (control.aiThrottle() < 0 ? "倒車 " : "前進 ") +
+                            control.aiDriveSpeedGain() +
                             "% 增益｜方向 " +
                             (control.aiSteering() < 0 ? "左" :
                              control.aiSteering() > 0 ? "右" : "回正") +
@@ -235,7 +245,8 @@ public final class MainActivity extends Activity {
             maybeStartCamera();
             updateNetworkStatus();
             updateTxStatus();
-            if (drivePad != null) drivePad.setControlsAvailable(control.armed());
+            if (drivePad != null) drivePad.setControlsAvailable(drivingMode &&
+                    activeProfile == CarProfile.WL_TECH && routes.wifi() != null);
             main.postDelayed(this, 2500);
         }
     };
@@ -506,7 +517,8 @@ public final class MainActivity extends Activity {
         lockButton.setTextSize(12);
         lockButton.setContentDescription("車輛已上鎖；點擊解鎖並確認");
         topRow.addView(lockButton, new LinearLayout.LayoutParams(dp(90), dp(38)));
-        lockButton.setVisibility(View.GONE); // voice commands validate and arm internally
+        // Keep a visible status/recovery affordance for manual driving.
+        // Voice and the physical pad also auto-arm after validating car Wi-Fi.
         modeButton = button("設定", v -> toggleMode());
         topRow.addView(modeButton, new LinearLayout.LayoutParams(dp(76), dp(38)));
         banner.addView(topRow);
@@ -569,8 +581,9 @@ public final class MainActivity extends Activity {
                 log.i("CAM", "TextureView destroyed; suspending camera");
                 if (currentCameraAdapter == 0) {
                     stopCameraReceiver();
-                    if (control != null) control.disarm();
-                    if (arm != null) uncheck();
+                    // FPV surface recreation must STOP AI motion but not lock
+                    // the unrelated physical manual pad until a hidden re-arm.
+                    if (control != null) control.emergencyStop();
                 }
                 return true;
             }
@@ -636,10 +649,21 @@ public final class MainActivity extends Activity {
                 return;
             }
             if (!control.armed()) {
-                drivePad.cancelInput();
-                drivePad.setControlsAvailable(false);
-                log.e("SAFETY", "dual-stick input blocked: locked");
-                return;
+                if (!foreground || !drivingMode || activeProfile != CarProfile.WL_TECH ||
+                        routes.wifi() == null) {
+                    log.e("MANUAL", "manual input requires active WL Wi-Fi and driving screen");
+                    drivePad.cancelInput();
+                    return;
+                }
+                // The driver's touch is an explicit human control request.
+                // No hidden checkbox state or Gemini session is required.
+                String issue = control.arm();
+                if (issue != null) {
+                    log.e("MANUAL", "cannot enable manual controls: " + issue);
+                    drivePad.cancelInput();
+                    return;
+                }
+                log.i("MANUAL", "physical pad enabled motor control");
             }
             control.setManual(true);
             String result = control.driveManualAxes(steer, throttle);
@@ -650,7 +674,7 @@ public final class MainActivity extends Activity {
         drivePad.setCenterTapListener((x, y) -> {
             if (visionOverlay != null) visionOverlay.selectAt(x, y);
         });
-        drivePad.setControlsAvailable(false);
+        drivePad.setControlsAvailable(true);
         cockpit.addView(drivePad, new FrameLayout.LayoutParams(-1, -1));
         visionDebugHud = new TextView(this);
         visionDebugHud.setTextSize(11);
@@ -881,7 +905,7 @@ public final class MainActivity extends Activity {
             updateLockButton();
         });
         label(root, "直接說「朝門口開／持續前進」，不需額外按解鎖；Android 持續送油門封包。" +
-                " Gemini 依車頭影像調整方向與相對增益，最長120秒。" +
+                " Gemini 依車頭影像調整方向與相對增益，單次5秒；可在5秒內倒退或停車。" +
                 " 手動接管、明確停車、Live／車 Wi-Fi 或影像中斷會停止。沒有測距、避障或車端 ACK。", 12);
 
         // The technical tuning indicator belongs in Control settings, not
@@ -921,7 +945,7 @@ public final class MainActivity extends Activity {
             else log.i("LIVE", "text turn sent (content redacted)");
         }), new LinearLayout.LayoutParams(-1, dp(50)));
         label(root, "語音「朝門口開／開始 AI 駕駛」：Android 維持低速油門，Gemini 約每2.5秒" +
-                " 根據 FPV 朝目標修正方向。目標暫時離開畫面可繼續低速觀察；最長120秒。" +
+                " 根據 FPV 朝目標修正方向。目標暫時離開畫面可低速觀察；單次5秒。" +
                 " 使用者停車、手動接管或失去連線／影像仍會停。無測距或車端 ACK。", 12);
         root.addView(button("讓 Gemini 看人物方向並走一步（最多 0.5 秒）", v -> {
             if (!gemini.sendText("這是使用者明確要求：請觀察你近期實際看見的車頭 FPV 畫面。" +
@@ -1167,8 +1191,8 @@ public final class MainActivity extends Activity {
     /** Compact arming affordance; never automatically unlock on screen changes. */
     private void updateLockButton() {
         if (lockButton == null || control == null) return;
-        boolean armedNow = control.armed() && arm != null && arm.isChecked();
-        lockButton.setText(armedNow ? "🔓 已解鎖" : "🔒 已上鎖");
+        boolean armedNow = control.armed();
+        lockButton.setText(armedNow ? "● 可操控" : "○ 點擊啟用");
         lockButton.setTextColor(armedNow ? Color.rgb(15, 95, 68) : Color.rgb(52, 65, 81));
         lockButton.setBackgroundTintList(android.content.res.ColorStateList.valueOf(
                 armedNow ? Color.rgb(204, 245, 223) : Color.rgb(225, 233, 241)));
@@ -1730,12 +1754,12 @@ public final class MainActivity extends Activity {
                 }
                 return result;
             }
-            @Override public String onAdjustAiDriveSession(long id, String steering, String speed) {
+            @Override public String onAdjustAiDriveSession(long id, String steering, String speed, String motion) {
                 if (visionAlign.active() || !foreground || !drivingMode ||
                         activeProfile != CarProfile.WL_TECH || !gemini.ready() ||
                         routes.wifi() == null || !control.armed())
                     return "blocked: Gemini/WL Wi-Fi/foreground and arm gate";
-                return control.adjustAiDrive(id, steering, speed);
+                return control.adjustAiDrive(id, steering, speed, motion);
             }
             @Override public long currentAiDriveSessionId() {
                 return control.aiDriveSessionId();
@@ -1748,6 +1772,10 @@ public final class MainActivity extends Activity {
                     return "blocked: Gemini/WL Wi-Fi/foreground required";
                 String ready = ensureAiDriveReady();
                 if (ready != null) return ready;
+                if ("forward".equals(intent) || "forward_continuous".equals(intent)) {
+                    aiDriveGoal = "往前探索";
+                    return control.startAiDriveSession(); // full five-second adjustable lease
+                }
                 return control.driveIntent(intent);
             }
             @Override public String onGuideTowardPerson(String bearing) {
@@ -1810,9 +1838,9 @@ public final class MainActivity extends Activity {
                         "voice_drive_intent_available", activeProfile == CarProfile.WL_TECH,
                         "voice_drive_intent_active", control.aiHoldActive(),
                         "voice_drive_intent_requires_extra_approval", false,
-                        "voice_drive_intent_requires_manual_arm", true,
+                        "voice_drive_intent_requires_manual_arm", false,
                         "voice_drive_intent_distance_measured", false,
-                        "voice_drive_intent_trajectory_correction_available", false,
+                        "voice_drive_intent_trajectory_correction_available", true,
                         "person_align_feedback_available", true,
                         "person_align_active", visionAlign.active(),
                         "person_align_pulses", visionAlign.pulses(),
@@ -1838,6 +1866,8 @@ public final class MainActivity extends Activity {
                         "ai_drive_speed_gain_percent", control.aiDriveSpeedGain(),
                         "ai_drive_update_age_ms", control.aiDriveLastControlAgeMs(),
                         "ai_drive_session_max_ms", AiDriveSessionPolicy.MAX_SESSION_MS,
+                        "ai_drive_can_reverse_in_window", true,
+                        "ai_drive_feedback_source", "FPV visual observation; motor TX no ACK",
                         "ai_drive_control_silence_stop_ms", AiDriveSessionPolicy.STALE_CONTROL_MS,
                         "ai_drive_direction_recenter_ms", AiDriveSessionPolicy.STEERING_HOLD_MS,
                         "ai_steering", control.aiSteering(),

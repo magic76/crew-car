@@ -26,21 +26,23 @@ public final class GeminiCarTools {
         JSONObject intent = action("drive_intent",
                 "One explicit spoken RC-car command only. Fixed short Android motor leases; " +
                 "no trajectory correction, distance sensing, wall detection or collision avoidance. " +
-                "forward_small = '前進一點' (0.5s); forward = '往前進' (0.9s); " +
-                "forward_continuous = explicit '持續向前走' (ONE 2s video-fresh lease only). " +
+                "forward_small = '前進一點' (0.5s). '往前進' means one 5s Android drive " +
+                "session with FPV-based steering/reverse/STOP allowed DURING those 5 seconds. " +
                 "backward_small = '後退一點' (0.5s); backward = '倒車' (0.9s). " +
                 "front_left/front_right = '往左前方/往右前方' (0.6s steering AND throttle, " +
                 "both STOP together, no straight tail); _small is 0.5s. " +
                 "Never auto-renew continuous driving. Video freshness is NOT verified " +
                 "obstacle clearance or delivered visual understanding. " +
                 "Never infer obstacle clearance, distance, arrival or successful vehicle movement. " +
-                "Never chain motion tools. Only human unlock enables short supervised moves.");
+                "No motor ACK: do not wait for replies; use visible change between recent FPV frames " +
+                "as uncertain visual evidence. Never auto-chain new drive sessions.");
         intent.getJSONObject("parameters")
                 .put("properties", new JSONObject()
                         .put("intent", new JSONObject().put("type", "STRING")
                                 .put("enum", new JSONArray()
                                         .put("forward_small")
                                         .put("forward")
+                                        .put("forward_continuous")
                                         .put("backward_small")
                                         .put("backward")
                                         .put("front_left_small")
@@ -78,6 +80,15 @@ public final class GeminiCarTools {
                 "independently. steering = left/right/center/keep; left/right is a SHORT 900ms " +
                 "correction that auto-centers, while FORWARD THROTTLE KEEPS GOING. " +
                 "speed = slow/normal/fast/keep (bounded 50/65/80% OEM gain, NOT km/h). " +
+                "motion = keep/forward/reverse/stop. You CAN reverse or stop within 5 seconds " +
+                "without waiting for a new speech turn. Never assume a queued tool has vehicle ACK. " +
+                "To decide turning, use recent FPV image coordinates: locate intended opening " +
+                "(doorway, corridor) and estimate its CENTER relative to image center. " +
+                "If opening center lies in left third choose steering=left, in right third " +
+                "choose right, otherwise center. An open doorway is the gap between doorposts; " +
+                "the nearest wall edge is NOT the steering target. After each correction, compare " +
+                "the opening center or stationary background across two different FPV frames. " +
+                "If visibility temporarily unclear use slow/center/keep, not fabricated confidence. " +
                 "If the goal briefly leaves the image or framing is poor, use slow and keep/center " +
                 "to continue observing; do not stop simply because certainty is imperfect. " +
                 "When a collision is clearly imminent, human STOP is requested, or link is lost, stop_car. " +
@@ -91,19 +102,23 @@ public final class GeminiCarTools {
                                         .put("center").put("keep")))
                         .put("speed", new JSONObject().put("type", "STRING")
                                 .put("enum", new JSONArray().put("slow").put("normal")
-                                        .put("fast").put("keep"))))
+                                        .put("fast").put("keep")))
+                        .put("motion", new JSONObject().put("type", "STRING")
+                                .put("enum", new JSONArray().put("keep").put("forward")
+                                        .put("reverse").put("stop"))))
                 .put("required", new JSONArray().put("session_id")
-                        .put("steering").put("speed"));
+                        .put("steering").put("speed").put("motion"));
 
         JSONObject goalStart = action("start_ai_drive_session",
                 "Start a locally controlled driving session on explicit human voice request: " +
                 "'朝門口開/開到桌子附近/持續前進'. Capture the user destination in goal. " +
-                "Once active, independently adjust steering and bounded throttle using " +
-                "adjust_ai_drive_session with the exact session_id. Do not demand a separate " +
+                "One activation lasts 5 seconds, with steering, throttle direction and gain " +
+                "adjustable at any time DURING the window using adjust_ai_drive_session " +
+                "and the exact session_id. Do not demand a separate " +
                 "UI unlock, but Android must verify WL car Wi-Fi and foreground Live. " +
                 "Temporary image uncertainty is NOT itself grounds for STOP: use slow, " +
                 "keep/center and continue to look for the goal. STOP for explicit command, " +
-                "imminent collision, camera/Live/Wi-Fi failure, manual takeover or local expiry. " +
+                "imminent collision, camera/Live/Wi-Fi failure, manual takeover or 5-second expiry. " +
                 "This is not verified navigation, distance sensing or obstacle avoidance. " +
                 "Never restart an expired session automatically.");
         goalStart.getJSONObject("parameters")

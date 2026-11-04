@@ -121,7 +121,7 @@ public final class CarControl {
                     // Recenter steering but KEEP video watchdog and forward throttle.
                     aiSteer = 0;
                     String command = aiDriveSessionActive ?
-                            "ai-session:0:1:" + aiDriveSpeedGain :
+                            "ai-session:0:" + aiThrottle + ":" + aiDriveSpeedGain :
                             "axes:0:" + aiThrottle;
                     if (!command.equals(active)) {
                         active = command;
@@ -574,15 +574,23 @@ public final class CarControl {
                     " video watchdog on, motor unacknowledged");
         });
         return "queued AI Drive Session id=" + sessionId +
-                ", initial slow forward, capped at " + AiDriveSessionPolicy.MAX_SESSION_MS +
-                "ms; no device ACK";
+                ", initial slow forward for " + AiDriveSessionPolicy.MAX_SESSION_MS +
+                "ms; steer/reverse/STOP allowed before expiry; no device ACK";
     }
 
     /**
      * Steering and throttle gain are INDEPENDENT. Turn correction expires to
      * center without stopping the forward throttle. No session extension.
      */
-    public synchronized String adjustAiDrive(long sessionId, String steering, String pace) {
+    public synchronized String adjustAiDrive(long sessionId, String steering, String pace,
+                                             String motion) {
+        if (!AiDriveSessionPolicy.validMotion(motion))
+            return "blocked: motion must be keep/forward/reverse/stop";
+        // A STOP request must always work, even if live video is stale.
+        if ("stop".equals(motion)) {
+            emergencyStop("AI requested stop during drive window");
+            return "stopped: both axes neutral requested";
+        }
         if (!AiDriveSessionPolicy.validSteering(steering) ||
                 !AiDriveSessionPolicy.validSpeed(pace))
             return "blocked: steering left/center/right/keep; speed slow/normal/fast/keep";
@@ -614,23 +622,25 @@ public final class CarControl {
                 return;
             }
             aiSteer = AiDriveSessionPolicy.steering(steering, aiSteer);
+            aiThrottle = AiDriveSessionPolicy.throttleFor(motion, aiThrottle);
             aiDriveSpeedGain = AiDriveSessionPolicy.speedGain(pace, aiDriveSpeedGain);
             if (!"keep".equals(steering)) {
                 aiSteerReleaseAt = aiSteer == 0 ? 0 :
                         now + AiDriveSessionPolicy.STEERING_HOLD_MS;
             }
             aiDriveSessionLastControlAt = now;
-            String command = "ai-session:" + aiSteer + ":1:" + aiDriveSpeedGain;
+            String command = "ai-session:" + aiSteer + ":" + aiThrottle +
+                    ":" + aiDriveSpeedGain;
             if (!command.equals(active)) {
                 active = command;
                 sendInternal(command);
             }
             log.i("AI_SESSION", "update id=" + sessionId +
-                    " steering=" + steering + " speed=" + pace +
+                    " steering=" + steering + " motion=" + motion + " speed=" + pace +
                     " gain=" + aiDriveSpeedGain + " leaseRemainingMs=" +
                     Math.max(0, deadline - now) + " no car ACK");
         });
-        return "queued independent steering/speed update, session deadline unchanged (no car ACK)";
+        return "queued steering/throttle/speed update, 5s deadline unchanged; verify FPV not car ACK";
     }
 
     /** One 500ms step from a Gemini-proposed person bearing; no autonomous chaining. */
@@ -916,7 +926,7 @@ public final class CarControl {
                 int steer = Integer.parseInt(axes[1]);
                 int throttle = Integer.parseInt(axes[2]);
                 int gain = Integer.parseInt(axes[3]);
-                if (throttle != 1 ||
+                if ((throttle != 1 && throttle != -1) ||
                         (gain != AiDriveSessionPolicy.SLOW_GAIN &&
                          gain != AiDriveSessionPolicy.NORMAL_GAIN &&
                          gain != AiDriveSessionPolicy.FAST_GAIN))

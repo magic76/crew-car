@@ -6,10 +6,10 @@ package com.crew.car;
  * gains, NOT measured speed or safe stopping distances.
  */
 public final class AiDriveSessionPolicy {
-    public static final int MAX_SESSION_MS = 120_000;
-    public static final int STALE_CONTROL_MS = 30_000;
+    public static final int MAX_SESSION_MS = 5_000;
+    public static final int STALE_CONTROL_MS = 5_000;
     public static final int STEERING_HOLD_MS = 900;
-    public static final int VIDEO_REVIEW_INTERVAL_MS = 2_500;
+    public static final int VIDEO_REVIEW_INTERVAL_MS = 1_500;
     public static final int SLOW_GAIN = 50;
     public static final int NORMAL_GAIN = 65;
     public static final int FAST_GAIN = 80;
@@ -24,6 +24,22 @@ public final class AiDriveSessionPolicy {
     public static boolean validSpeed(String speed) {
         return "slow".equals(speed) || "normal".equals(speed) ||
                 "fast".equals(speed) || "keep".equals(speed);
+    }
+
+    public static boolean validMotion(String motion) {
+        return "keep".equals(motion) || "forward".equals(motion) ||
+                "reverse".equals(motion) || "stop".equals(motion);
+    }
+
+    /** Relative throttle direction only; STOP is applied via emergencyStop. */
+    public static int throttleFor(String motion, int previous) {
+        if (!validMotion(motion)) throw new IllegalArgumentException("invalid motion");
+        switch (motion) {
+            case "forward": return 1;
+            case "reverse": return -1;
+            case "stop": return 0;
+            default: return previous;
+        }
     }
 
     public static int steering(String direction, int previous) {

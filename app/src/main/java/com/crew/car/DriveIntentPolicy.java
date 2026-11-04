@@ -7,9 +7,9 @@ package com.crew.car;
  */
 public final class DriveIntentPolicy {
     public static final int NUDGE_MS = 500;
-    public static final int FORWARD_MS = 900;
-    /** Explicit continuous speech gets one capped 2-second lease, NOT auto-renewal. */
-    public static final int SUPERVISED_CRUISE_MS = 2000;
+    public static final int FORWARD_MS = 5000;
+    /** Explicit forward requests get one 5-second motor window, NOT auto-renewal. */
+    public static final int SUPERVISED_CRUISE_MS = 5000;
     public static final int REVERSE_MS = 900;
     public static final int FRONT_DIAGONAL_MS = 600;
     public static final int TURN_RECENTER_MS = 650;

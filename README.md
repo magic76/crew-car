@@ -245,3 +245,13 @@ Explicitly say **「開始 AI 駕駛／持續前進」** while the WL car is man
 While active, Android queues a Gemini review prompt approximately every 3 seconds, asking it to inspect the latest FPV and adjust speed/direction or STOP on uncertainty. Gemini updates are **best-effort**, not real-time motor-loop feedback; video queued to a WebSocket does not prove a person or obstacle was recognized. **No obstacle avoidance, speed/position sensor, vehicle ACK, or target-tracking guarantee.** The driver must remain in direct control of STOP.
 
 **Fail-closed:** at most **30 seconds per explicit user-started session**, STOP on >8.5s without accepted control updates, camera/Live freshness lost, app background, manual joystick, E-STOP, session-id mismatch, or transport error. The model cannot extend or restart the session on its own. This is a motor-control prototype, **not safe autonomous navigation**. Begin hardware testing wheels elevated; then only in a private, cleared area with physical cutoff within reach. See [AI Drive Session QA](docs/AI_DRIVE_SESSION_QA.md).
+
+## v0.1.31 — Five-second FPV-feedback driving
+
+A normal AI 「前進」 now starts a **single five-second Android motor lease**; Gemini can change left/right/center steering, forward/reverse throttle or request STOP **within that same lease**. Destination requests such as 「朝門口開」 use the same five-second window. New commands do not automatically restart the car after timeout.
+
+The **manual driving pad can arm the car on first physical touch** when the WL Wi-Fi and configured endpoint are present. This corrects a prior hidden-lock-state bug. Manual control always preempts active AI movement. Camera preview recreation requests STOP but does not force the manual pad to remain locked.
+
+Gemini no longer expects a physical motor ACK (the toy RC protocol does not provide one); it checks successive FPV frames for visual evidence of movement and adjusts steering toward the **center of a visible doorway**. Images are already compressed; this version reduces JPEG to **448px longest edge at quality 60, at most 1 FPS**, and logs compression time / bytes / WebSocket queue occupancy for tuning.
+
+Emergency STOP, manual override, stale FPV/Live/Wi-Fi checks and the bounded five-second motor deadline remain. **No speed, distance, odometry or obstacle telemetry is available.** See [acceptance checklist](docs/FPV_FIVE_SECOND_DRIVE_QA.md).
