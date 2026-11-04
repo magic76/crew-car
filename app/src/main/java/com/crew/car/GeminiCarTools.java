@@ -26,8 +26,9 @@ public final class GeminiCarTools {
         JSONObject intent = action("drive_intent",
                 "One explicit spoken RC-car command only. Fixed short Android motor leases; " +
                 "no trajectory correction, distance sensing, wall detection or collision avoidance. " +
-                "forward_small = '前進一點' (0.5s). '往前進' means one 5s Android drive " +
-                "session with FPV-based steering/reverse/STOP allowed DURING those 5 seconds. " +
+                "forward_small = '前進一點' (0.5s). '往前進' starts one bounded 30s Android " +
+                "continuous drive session. Android maintains throttle while Gemini makes " +
+                "FPV-based steering/reverse/STOP updates in the SAME session. " +
                 "backward_small = '後退一點' (0.5s); backward = '倒車' (0.9s). " +
                 "front_left/front_right = '往左前方/往右前方' (0.6s steering AND throttle, " +
                 "both STOP together, no straight tail); _small is 0.5s. " +
@@ -80,8 +81,13 @@ public final class GeminiCarTools {
                 "independently. steering = left/right/center/keep; left/right is a SHORT 900ms " +
                 "correction that auto-centers, while FORWARD THROTTLE KEEPS GOING. " +
                 "speed = slow/normal/fast/keep (bounded 70/85/100% OEM gain, NOT km/h). " +
-                "motion = keep/forward/reverse/stop. You CAN reverse or stop within 5 seconds " +
-                "without waiting for a new speech turn. Never assume a queued tool has vehicle ACK. " +
+                "motion = keep/forward/reverse/stop. Reverse, steer or STOP at any point " +
+                "during the same session, without waiting for a new human speech turn. " +
+                "On EVERY periodic FPV review, call adjust_ai_drive_session with the exact " +
+                "session_id. If course is unchanged, reply steering=keep, speed=keep, " +
+                "motion=keep so Android knows feedback is still live. " +
+                "Without an update for 8s Android STOPs; absolute expiry is 30s. " +
+                "Never assume a queued tool has vehicle ACK. " +
                 "To decide turning, use recent FPV image coordinates: locate intended opening " +
                 "(doorway, corridor) and estimate its CENTER relative to image center. " +
                 "If opening center lies in left third choose steering=left, in right third " +
@@ -112,17 +118,19 @@ public final class GeminiCarTools {
         JSONObject goalStart = action("start_ai_drive_session",
                 "Start a locally controlled driving session on explicit human voice request: " +
                 "'朝門口開/開到桌子附近/持續前進'. Capture the user destination in goal. " +
-                "One activation lasts 5 seconds, with steering, throttle direction and gain " +
-                "adjustable at any time DURING the window using adjust_ai_drive_session " +
+                "One explicit human activation lasts up to 30 seconds, with continuously repeated " +
+                "Android throttle packets. Steering, throttle direction and gain can be " +
+                "changed at any time DURING this SAME window using adjust_ai_drive_session " +
                 "and the exact session_id. Do not demand a separate " +
                 "UI unlock, but Android must verify WL car Wi-Fi and foreground Live. " +
                 "Temporary image uncertainty is NOT itself grounds for STOP: prefer normal " +
                 "gain (85%) when the route looks navigable, and use slow (70%) only for tight " +
                 "corners or when genuinely needed; adjust keep/center and keep observing. " +
                 "STOP for explicit command, " +
-                "imminent collision, camera/Live/Wi-Fi failure, manual takeover or 5-second expiry. " +
+                "imminent collision, camera/Live/Wi-Fi failure, manual takeover, " +
+                "8-second missing model updates, or 30-second absolute expiry. " +
                 "This is not verified navigation, distance sensing or obstacle avoidance. " +
-                "Never restart an expired session automatically.");
+                "Never restart an expired session automatically. This is not autonomous navigation.");
         goalStart.getJSONObject("parameters")
                 .put("properties", new JSONObject()
                         .put("goal", new JSONObject().put("type", "STRING")
