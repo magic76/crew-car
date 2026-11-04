@@ -85,30 +85,31 @@ public final class MainActivity extends Activity {
                     // Ask for the first FPV correction after ~0.7s rather than
                     // spending half the 5s lease waiting for the first prompt.
                     lastAiDriveReviewPromptAt = now -
-                            AiDriveSessionPolicy.VIDEO_REVIEW_INTERVAL_MS + 700;
+                            DriveReviewGate.MIN_REVIEW_INTERVAL_MS +
+                            DriveReviewGate.FIRST_REVIEW_DELAY_MS;
                 } else if (now - lastAiDriveReviewPromptAt >=
-                        AiDriveSessionPolicy.VIDEO_REVIEW_INTERVAL_MS &&
+                        DriveReviewGate.MIN_REVIEW_INTERVAL_MS &&
                         gemini.ready() &&
                         gemini.liveVideoAgeMs() >= 0 && gemini.liveVideoAgeMs() <= 5000 &&
                         cameraAgeMs() >= 0 && cameraAgeMs() <= 5000) {
                     lastAiDriveReviewPromptAt = now;
-                    String review = "Crew Car Android 本地 AI Drive Session id=" + sessionId +
-                            " 正朝目標「" + aiDriveGoal + "」持續行駛。請觀察近期 FPV，" +
-                            "朝此目標決定一次 adjust_ai_drive_session，帶相同 session_id。" +
-                            " 看車頭畫面：先判斷門框/通道兩側之間的開口中心，在影像左側就短左修正，" +
-                            "右側就短右修正，接近中央則回正。不要只因看到牆就停止。" +
-                            " steering 用 left/right/center/keep，speed 用 slow/normal/fast/keep，" +
-                            " motion 用 keep/forward/reverse/stop。可以在剩餘5秒內改倒車或停止。" +
-                            "請用新舊畫面中固定背景的相對位置驗證轉彎是否有效，" +
-                            "不可等待不存在的車端ACK，也不用語音反覆報告沒收到回應。" +
-                            "方向修正900ms後回正，油門仍保持；不要重新啟動 session。" +
-                            "普通可通行路線維持 normal（85%增益）；僅在轉彎狹窄或需要減速時用 slow（70%），不要一直預設慢速；暫時看不清目標也不要僅因此停車。" +
-                            " 若確實看到即將碰撞，呼叫 stop_car。不可假稱看見目標。" +
-                            " 沒有測距、避障能力或抵達確認，回覆簡短。";
-                    if (gemini.sendText(review)) {
-                        log.i("AI_SESSION", "requested periodic visual steering review id=" +
-                                sessionId + " (not model acknowledgement)");
-                    } else log.e("AI_SESSION", "visual steering review text not queued");
+                    // Compact FPV-only prompt; no overlapping cloud visual reviews.
+                    // Motor cadence and the five-second cutoff remain on Android.
+                    String review = "Crew Car AI Drive Session id=" + sessionId +
+                            "，目標「" + aiDriveGoal + "」。只根據近期FPV評估開口中心" +
+                            "相對畫面中心的偏移，使用同一session_id呼叫一次" +
+                            " adjust_ai_drive_session：steering left/right/center/keep，" +
+                            "speed slow/normal/fast/keep，motion keep/forward/reverse/stop。" +
+                            "正常路線維持normal，必要才slow。不要等待不存在的車端ACK，" +
+                            "不要反覆口頭報告。看不清不可宣稱抵達；必要時stop_car。" +
+                            "本段5秒到期由Android停止，不能重啟。";
+                    if (gemini.requestDriveReview(sessionId, review)) {
+                        log.i("AI_REVIEW", "new FPV review id=" + sessionId +
+                                " queued; next review waits for turn/tool completion");
+                    } else {
+                        log.i("AI_REVIEW", "review not issued (inflight or Live enqueue failed) id=" +
+                                sessionId + " pending=" + gemini.driveReviewPending());
+                    }
                 }
             }
             if (visionAlign.active()) {
@@ -147,7 +148,9 @@ public final class MainActivity extends Activity {
                     aiDriveStatus.setText("手動油門持續送包：" +
                             (heldThrottle > 0 ? "前進" : "倒車") + "｜" +
                             control.tuning().intervalMs + "ms／包");
-                else aiDriveStatus.setText("AI 巡航：未啟用｜手動按住前進／倒車持續送包");
+                else aiDriveStatus.setText("AI 停車：" +
+                        CarStopStatus.label(control.lastStopReason()) +
+                        "｜手動按住前進／倒車");
             }
             updateVisionDebugHud();
             main.postDelayed(this, 250);
@@ -1717,7 +1720,8 @@ public final class MainActivity extends Activity {
             @Override public void onStatus(String status) {
                 if (status.contains("失敗") || status.contains("中斷")) {
                     stopVisionAlignment("Gemini Live 連線中斷");
-                    control.emergencyStop();
+                    control.stopForLiveDisconnect();
+                    log.e("LIVE_DIAG", "Gemini WebSocket terminated; not proof of car Wi-Fi failure");
                     main.post(routes::releaseCellularForLive);
                 }
                 runOnUiThread(() -> {
@@ -1866,6 +1870,12 @@ public final class MainActivity extends Activity {
                         "ai_drive_speed_gain_percent", control.aiDriveSpeedGain(),
                         "ai_drive_update_age_ms", control.aiDriveLastControlAgeMs(),
                         "ai_drive_session_max_ms", AiDriveSessionPolicy.MAX_SESSION_MS,
+                        "ai_review_in_flight", gemini.driveReviewPending(),
+                        "ai_review_pending_age_ms", gemini.driveReviewPendingAgeMs(),
+                        "ai_review_queued", gemini.driveReviewQueuedCount(),
+                        "ai_review_overlap_skipped", gemini.driveReviewSkippedCount(),
+                        "ai_review_timed_out", gemini.driveReviewExpiredCount(),
+                        "last_stop_category", CarStopStatus.label(control.lastStopReason()),
                         "ai_drive_can_reverse_in_window", true,
                         "ai_drive_feedback_source", "FPV visual observation; motor TX no ACK",
                         "ai_drive_control_silence_stop_ms", AiDriveSessionPolicy.STALE_CONTROL_MS,

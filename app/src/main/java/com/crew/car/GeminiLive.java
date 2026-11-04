@@ -77,6 +77,7 @@ public final class GeminiLive {
     private Thread micThread;
     private OkHttpClient client;
     private final Speaker speaker = new Speaker();
+    private final DriveReviewGate driveReviews = new DriveReviewGate();
     private Listener listener;
     private final Map<String, JSONObject> recentToolResponses = new LinkedHashMap<String, JSONObject>(64, .75f, true) {
         @Override protected boolean removeEldestEntry(Map.Entry<String, JSONObject> eldest) {
@@ -126,6 +127,34 @@ public final class GeminiLive {
                 Math.max(0, SystemClock.elapsedRealtime() - last);
     }
     public long liveVideoFramesQueued() { return videoFramesQueued; }
+    public boolean driveReviewPending() { return driveReviews.isPending(); }
+    public long driveReviewPendingAgeMs() {
+        return driveReviews.pendingAgeMs(SystemClock.elapsedRealtime());
+    }
+    public long driveReviewQueuedCount() { return driveReviews.queuedCount(); }
+    public long driveReviewSkippedCount() { return driveReviews.skippedCount(); }
+    public long driveReviewExpiredCount() { return driveReviews.expiredCount(); }
+
+    /**
+     * A scheduled FPV review never blocks the Android motor ticker. The gate
+     * prevents overlapping model requests, even if the assistant is speaking.
+     * No new request is issued while the previous review awaits a tool/turn.
+     */
+    public boolean requestDriveReview(long sessionId, String review) {
+        if (!ready || socket == null || sessionId <= 0) return false;
+        long now = SystemClock.elapsedRealtime();
+        if (!driveReviews.begin(sessionId, now)) return false;
+        if (!sendText(review)) {
+            driveReviews.completeTool(sessionId);
+            log.e("AI_REVIEW", "visual review WebSocket enqueue rejected");
+            return false;
+        }
+        WebSocket current = socket;
+        log.i("AI_REVIEW", "review queued id=" + sessionId +
+                " pendingAgeMs=" + driveReviewPendingAgeMs() +
+                " wsQueueBytes=" + (current == null ? -1 : current.queueSize()));
+        return true;
+    }
 
     public synchronized void connect(String apiKey, Network internet, Listener callback) {
         disconnect();
@@ -148,6 +177,7 @@ public final class GeminiLive {
         ++speechGeneration;
         this.lastFrameSent = 0L;
         this.videoFramesQueued = 0L;
+        driveReviews.reset();
         client = new OkHttpClient.Builder()
                 .socketFactory(internet.getSocketFactory())
                 .dns(host -> Arrays.asList(internet.getAllByName(host)))
@@ -198,6 +228,7 @@ public final class GeminiLive {
                 if (ws != socket) return;
                 ready = false;
                 cancelSetupTimeout();
+                driveReviews.reset();
                 stopMic();
                 speaker.close();
                 setAssistantSpeaking(false);
@@ -224,6 +255,7 @@ public final class GeminiLive {
                 if (ws != socket) return;
                 ready = false;
                 cancelSetupTimeout();
+                driveReviews.reset();
                 stopMic();
                 speaker.close();
                 setAssistantSpeaking(false);
@@ -320,6 +352,7 @@ public final class GeminiLive {
             JSONObject content = m.optJSONObject("serverContent");
             if (content != null) {
                 if (content.optBoolean("interrupted")) {
+                    driveReviews.completeTurn();
                     ignoreAudioUntilTurnBoundary = false;
                     speaker.clear();
                     assistantTurnFinished = true;
@@ -349,6 +382,7 @@ public final class GeminiLive {
                     }
                 }
                 if (content.optBoolean("turnComplete")) {
+                    driveReviews.completeTurn();
                     ignoreAudioUntilTurnBoundary = false;
                     assistantTurnFinished = true;
                     long generation = ++speechGeneration;
@@ -362,6 +396,7 @@ public final class GeminiLive {
             JSONObject tools = m.optJSONObject("toolCall");
             if (tools != null) handleTools(ws, tools.optJSONArray("functionCalls"));
             if (m.has("toolCallCancellation")) {
+                driveReviews.completeTurn();
                 log.i("LIVE", "toolCallCancellation -> emergency stop");
                 if (listener != null) listener.onStop();
             }
@@ -376,6 +411,7 @@ public final class GeminiLive {
         terminalStatus = status;
         ready = false;
         cancelSetupTimeout();
+        driveReviews.reset();
         stopMic();
         speaker.close();
         setAssistantSpeaking(false);
@@ -433,6 +469,12 @@ public final class GeminiLive {
             if (call == null) continue;
             String name = call.optString("name", "");
             String id = call.optString("id", "");
+            if ("adjust_ai_drive_session".equals(name)) {
+                JSONObject args = call.optJSONObject("args");
+                driveReviews.completeTool(args == null ? 0 : args.optLong("session_id", 0));
+            } else if ("stop_car".equals(name) || "lock_car".equals(name)) {
+                driveReviews.completeTurn();
+            }
             long started = SystemClock.elapsedRealtime();
             JSONObject response = null;
             if (!id.isEmpty()) {
@@ -801,6 +843,7 @@ public final class GeminiLive {
 
     public synchronized void disconnect() {
         cancelSetupTimeout();
+        driveReviews.reset();
         terminalStatus = null;
         synchronized (recentToolResponses) { recentToolResponses.clear(); }
         stopMic();

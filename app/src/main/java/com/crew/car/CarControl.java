@@ -131,22 +131,29 @@ public final class CarControl {
                 }
                 if (now - lastAiSafetyCheckAt >= 100) {
                     lastAiSafetyCheckAt = now;
-                    boolean safe;
+                    boolean drivingGate = false;
+                    boolean videoFresh = false;
                     try {
-                        safe = aiSafetyGate.getAsBoolean() &&
+                        drivingGate = aiSafetyGate.getAsBoolean();
+                        videoFresh = drivingGate &&
                                 (!aiVideoGuarded || aiVideoGate.getAsBoolean());
-                    } catch (Exception e) { safe = false; }
-                    if (!safe) {
-                        aiHoldActive = false;
-                        armed = false; // fail closed: require human to re-arm after lost safety
-                        stopInternal("AI Live/Wi-Fi/foreground gate stale");
+                    } catch (Exception ignored) { videoFresh = false; }
+                    if (!videoFresh) {
+                        // Always stop motors, but a temporarily stale FPV frame
+                        // must not permanently lock an otherwise connected manual pad.
+                        boolean carWifiGone = network.wifi() == null;
+                        if (carWifiGone) armed = false;
+                        stopInternal(carWifiGone ? "Car Wi-Fi disconnected" :
+                                !drivingGate ? "Gemini Live/foreground gate stale" :
+                                        "AI FPV video queue stale");
                         return;
                     }
                 }
             }
             if (armed && network.wifi() == null) {
-                log.e("SAFETY", "Wi-Fi lost; disarming");
-                disarm();
+                log.e("SAFETY", "Car Wi-Fi disconnected; stopping and disarming");
+                armed = false;
+                emergencyStop("Car Wi-Fi disconnected");
                 return;
             }
             if (!"stop".equals(active) && SystemClock.elapsedRealtime() > deadline)
@@ -826,6 +833,9 @@ public final class CarControl {
     }
 
     public void emergencyStop() { emergencyStop("E-STOP"); }
+
+    /** Real Gemini WebSocket failure: stop AI without mislabeling car Wi-Fi. */
+    public void stopForLiveDisconnect() { emergencyStop("Gemini Live disconnected"); }
 
     private void emergencyStop(String reason) {
         lastStopReason = reason;
