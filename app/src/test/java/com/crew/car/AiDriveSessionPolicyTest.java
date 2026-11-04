@@ -23,13 +23,13 @@ public final class AiDriveSessionPolicyTest {
     }
 
     @Test public void staleControlAndAbsoluteDeadlineFailClosed() {
-        assertFalse(AiDriveSessionPolicy.shouldStop(29_999, 0, 0));
-        assertTrue(AiDriveSessionPolicy.shouldStop(30_000, 0, 0));
-        assertFalse(AiDriveSessionPolicy.shouldStop(100_000, 0, 99_000));
-        assertTrue(AiDriveSessionPolicy.shouldStop(120_000, 0, 119_900));
+        assertFalse(AiDriveSessionPolicy.shouldStop(4_999, 0, 0));
+        assertTrue(AiDriveSessionPolicy.shouldStop(5_000, 0, 0));
+        assertFalse(AiDriveSessionPolicy.shouldStop(4_000, 0, 3_500));
+        assertTrue(AiDriveSessionPolicy.shouldStop(5_000, 0, 4_900));
         assertTrue(AiDriveSessionPolicy.shouldStop(99, 100, 100));
         assertEquals("AI drive session max duration",
-                AiDriveSessionPolicy.stopReason(120_000, 0, 119_000));
+                AiDriveSessionPolicy.stopReason(5_000, 0, 4_900));
     }
 
     @Test public void invalidToolValuesThrow() {
