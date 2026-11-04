@@ -88,7 +88,7 @@ public final class MainActivity extends Activity {
                             AiDriveSessionPolicy.VIDEO_REVIEW_INTERVAL_MS + 700;
                 } else if (now - lastAiDriveReviewPromptAt >=
                         AiDriveSessionPolicy.VIDEO_REVIEW_INTERVAL_MS &&
-                        gemini.ready() && !gemini.assistantSpeaking() &&
+                        gemini.ready() &&
                         gemini.liveVideoAgeMs() >= 0 && gemini.liveVideoAgeMs() <= 5000 &&
                         cameraAgeMs() >= 0 && cameraAgeMs() <= 5000) {
                     lastAiDriveReviewPromptAt = now;
