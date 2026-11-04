@@ -5,12 +5,15 @@ import static org.junit.Assert.*;
 
 public final class AiDriveSessionPolicyTest {
     @Test public void boundedSpeedIsGainNotDistanceOrActualVelocity() {
-        assertEquals(50, AiDriveSessionPolicy.speedGain("slow", 80));
-        assertEquals(65, AiDriveSessionPolicy.speedGain("normal", 50));
-        assertEquals(80, AiDriveSessionPolicy.speedGain("fast", 50));
-        assertEquals(65, AiDriveSessionPolicy.speedGain("keep", 65));
+        assertEquals(70, AiDriveSessionPolicy.speedGain("slow", 100));
+        assertEquals(85, AiDriveSessionPolicy.speedGain("normal", 70));
+        assertEquals(100, AiDriveSessionPolicy.speedGain("fast", 70));
+        assertEquals(85, AiDriveSessionPolicy.speedGain("keep", 85));
         assertTrue(AiDriveSessionPolicy.FAST_GAIN <= CarTuning.MAX_GAIN_PERCENT);
         assertTrue(AiDriveSessionPolicy.SLOW_GAIN >= CarTuning.MIN_GAIN_PERCENT);
+        assertEquals(85, AiDriveSessionPolicy.NORMAL_GAIN);
+        assertTrue(AiDriveSessionPolicy.SLOW_GAIN < AiDriveSessionPolicy.NORMAL_GAIN);
+        assertTrue(AiDriveSessionPolicy.NORMAL_GAIN < AiDriveSessionPolicy.FAST_GAIN);
     }
 
     @Test public void correctionsAreIndependentOfThrottleAndCanKeep() {
