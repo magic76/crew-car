@@ -33,13 +33,22 @@ public final class AiDriveSessionPolicyTest {
     }
 
     @Test public void staleControlAndAbsoluteDeadlineFailClosed() {
-        assertFalse(AiDriveSessionPolicy.shouldStop(4_999, 0, 0));
-        assertTrue(AiDriveSessionPolicy.shouldStop(5_000, 0, 0));
-        assertFalse(AiDriveSessionPolicy.shouldStop(4_000, 0, 3_500));
-        assertTrue(AiDriveSessionPolicy.shouldStop(5_000, 0, 4_900));
-        assertTrue(AiDriveSessionPolicy.shouldStop(99, 100, 100));
+        assertEquals(30_000, AiDriveSessionPolicy.MAX_SESSION_MS);
+        assertEquals(8_000, AiDriveSessionPolicy.STALE_CONTROL_MS);
+        // The motor keeps running after 5 seconds when Gemini has corrected
+        // heading/pace within the watchdog window.
+        assertFalse(AiDriveSessionPolicy.shouldStop(5_000, 0, 4_000));
+        assertFalse(AiDriveSessionPolicy.shouldStop(16_000, 0, 12_500));
+        assertFalse(AiDriveSessionPolicy.shouldStop(29_999, 0, 26_500));
+        assertTrue(AiDriveSessionPolicy.shouldStop(30_000, 0, 29_500));
         assertEquals("AI drive session max duration",
-                AiDriveSessionPolicy.stopReason(5_000, 0, 4_900));
+                AiDriveSessionPolicy.stopReason(30_000, 0, 29_500));
+        // Missing model updates must STOP before the full 30 seconds.
+        assertFalse(AiDriveSessionPolicy.shouldStop(7_999, 0, 0));
+        assertTrue(AiDriveSessionPolicy.shouldStop(8_000, 0, 0));
+        assertEquals("AI drive steering/speed updates stale",
+                AiDriveSessionPolicy.stopReason(8_000, 0, 0));
+        assertTrue(AiDriveSessionPolicy.shouldStop(99, 100, 100));
     }
 
     @Test public void invalidToolValuesThrow() {
