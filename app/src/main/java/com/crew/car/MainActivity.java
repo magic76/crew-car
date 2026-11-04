@@ -95,8 +95,16 @@ public final class MainActivity extends Activity {
                     lastAiDriveReviewPromptAt = now;
                     // Compact FPV-only prompt; no overlapping cloud visual reviews.
                     // Motor cadence, 8s model-update watchdog and 30s cutoff stay on Android.
+                    String commandedThrottle = control.aiThrottle() < 0 ? "reverse" :
+                            control.aiThrottle() > 0 ? "forward" : "neutral";
+                    String commandedSteering = control.aiSteering() < 0 ? "left" :
+                            control.aiSteering() > 0 ? "right" : "center";
                     String review = "Crew Car AI Drive Session id=" + sessionId +
-                            "，目標「" + aiDriveGoal + "」。只根據近期FPV評估開口中心" +
+                            "，目標「" + aiDriveGoal + "」，Android當前持續送出的油門=" +
+                            commandedThrottle + "、轉向=" + commandedSteering +
+                            "、剩餘上限約" + control.aiLeaseRemainingMs() + "毫秒。" +
+                            "這是控制命令不是車子實際移動的ACK；請根據前後FPV來驗證方向效果。" +
+                            "只根據近期FPV評估開口中心" +
                             "相對畫面中心的偏移，使用同一session_id呼叫一次" +
                             " adjust_ai_drive_session：steering left/right/center/keep，" +
                             "speed slow/normal/fast/keep，motion keep/forward/reverse/stop。" +
