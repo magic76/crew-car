@@ -116,8 +116,10 @@ public final class GeminiCarTools {
                 "adjustable at any time DURING the window using adjust_ai_drive_session " +
                 "and the exact session_id. Do not demand a separate " +
                 "UI unlock, but Android must verify WL car Wi-Fi and foreground Live. " +
-                "Temporary image uncertainty is NOT itself grounds for STOP: use slow, " +
-                "keep/center and continue to look for the goal. STOP for explicit command, " +
+                "Temporary image uncertainty is NOT itself grounds for STOP: prefer normal " +
+                "gain (85%) when the route looks navigable, and use slow (70%) only for tight " +
+                "corners or when genuinely needed; adjust keep/center and keep observing. " +
+                "STOP for explicit command, " +
                 "imminent collision, camera/Live/Wi-Fi failure, manual takeover or 5-second expiry. " +
                 "This is not verified navigation, distance sensing or obstacle avoidance. " +
                 "Never restart an expired session automatically.");
