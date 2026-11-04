@@ -70,6 +70,7 @@ public final class MainActivity extends Activity {
     private TextView aiDriveStatus;
     private long lastAiDriveReviewSessionId;
     private long lastAiDriveReviewPromptAt;
+    private volatile String aiDriveGoal = "往前探索";
     private boolean autoStartMicOnReady;
     private final Runnable aiDriveTicker = new Runnable() {
         @Override public void run() {
@@ -85,16 +86,17 @@ public final class MainActivity extends Activity {
                 } else if (now - lastAiDriveReviewPromptAt >=
                         AiDriveSessionPolicy.VIDEO_REVIEW_INTERVAL_MS &&
                         gemini.ready() && !gemini.assistantSpeaking() &&
-                        gemini.liveVideoAgeMs() >= 0 && gemini.liveVideoAgeMs() <= 1500 &&
-                        cameraAgeMs() >= 0 && cameraAgeMs() <= 1500) {
+                        gemini.liveVideoAgeMs() >= 0 && gemini.liveVideoAgeMs() <= 5000 &&
+                        cameraAgeMs() >= 0 && cameraAgeMs() <= 5000) {
                     lastAiDriveReviewPromptAt = now;
                     String review = "Crew Car Android 本地 AI Drive Session id=" + sessionId +
-                            " 仍在行駛。請只根據你近期確實看見的車頭 FPV 影像，" +
-                            "決定一次 adjust_ai_drive_session，帶相同 session_id。" +
+                            " 正朝目標「" + aiDriveGoal + "」持續行駛。請觀察近期 FPV，" +
+                            "朝此目標決定一次 adjust_ai_drive_session，帶相同 session_id。" +
                             " steering 用 left/right/center/keep，speed 用 slow/normal/fast/keep。" +
                             "方向修正會在900ms後回正，但前進油門不中斷；不要重新啟動 session。" +
-                            "若影像不明、前方不確定或可能撞人/物，請呼叫 stop_car。" +
-                            " 沒有測距或避障能力，不可宣稱前方安全。不要長篇語音回答。";
+                            "暫時看不清目標時以 slow 加 keep/center 繼續觀察，不要僅因不確定就停車。" +
+                            " 若確實看到即將碰撞，呼叫 stop_car。不可假稱看見目標。" +
+                            " 沒有測距、避障能力或抵達確認，回覆簡短。";
                     if (gemini.sendText(review)) {
                         log.i("AI_SESSION", "requested periodic visual steering review id=" +
                                 sessionId + " (not model acknowledgement)");
@@ -351,10 +353,13 @@ public final class MainActivity extends Activity {
             long liveAge = gemini.liveVideoAgeMs();
             return foreground && drivingMode && cameraRunning &&
                     routes.wifi() != null && gemini.ready() &&
-                    cameraAge >= 0 && cameraAge <= 1500 &&
-                    liveAge >= 0 && liveAge <= 1500;
+                    cameraAge >= 0 && cameraAge <= 5000 &&
+                    liveAge >= 0 && liveAge <= 5000;
         });
         render();
+        // Initialize an endpoint for subsequent user-initiated AI commands.
+        // This never sends a movement packet or arms the motor.
+        if (!applyConfig()) log.e("UI", "initial control configuration unavailable");
         log.setListener(s -> runOnUiThread(() -> { if (logs != null) logs.setText(s); }));
         log.i("APP", "Crew Car voice safety: short supervised intent leases, diagonal dual-axis STOP, no collision avoidance or vehicle ACK");
         routes.diagnostics();
@@ -501,6 +506,7 @@ public final class MainActivity extends Activity {
         lockButton.setTextSize(12);
         lockButton.setContentDescription("車輛已上鎖；點擊解鎖並確認");
         topRow.addView(lockButton, new LinearLayout.LayoutParams(dp(90), dp(38)));
+        lockButton.setVisibility(View.GONE); // voice commands validate and arm internally
         modeButton = button("設定", v -> toggleMode());
         topRow.addView(modeButton, new LinearLayout.LayoutParams(dp(76), dp(38)));
         banner.addView(topRow);
@@ -874,9 +880,9 @@ public final class MainActivity extends Activity {
             }
             updateLockButton();
         });
-        label(root, "手動搖桿按住可持續控制；語音「開始 AI 駕駛／持續前進」由 Android 持續送前進油門。" +
-                " Gemini 可以在駕駛中改左／右／回正與速度（50／65／80% 原廠增益），不是量測車速。" +
-                " 最多30秒，影像／Live失效、控制更新逾時、手動接管或急停都會停止。無避障或車端 ACK。", 12);
+        label(root, "直接說「朝門口開／持續前進」，不需額外按解鎖；Android 持續送油門封包。" +
+                " Gemini 依車頭影像調整方向與相對增益，最長120秒。" +
+                " 手動接管、明確停車、Live／車 Wi-Fi 或影像中斷會停止。沒有測距、避障或車端 ACK。", 12);
 
         // The technical tuning indicator belongs in Control settings, not
         // a permanent bar below the FPV feed.
@@ -914,10 +920,9 @@ public final class MainActivity extends Activity {
             if (!gemini.sendText(prompt.getText().toString())) log.e("LIVE", "請先連線 Gemini");
             else log.i("LIVE", "text turn sent (content redacted)");
         }), new LinearLayout.LayoutParams(-1, dp(50)));
-        label(root, "語音「持續前進／開始 AI 駕駛」：油門由本地持續送出，Gemini 每3秒左右" +
-                " 根據新影像修正方向與相對油門增益。一次最多30秒，AI 工具回覆不能延長時間。" +
-                " 單次「朝人走一步」仍支援 0.5 秒，不依賴本地人物框。" +
-                " 無深度感測、可靠避障或車端 ACK；只能在清空障礙的場地實測。", 12);
+        label(root, "語音「朝門口開／開始 AI 駕駛」：Android 維持低速油門，Gemini 約每2.5秒" +
+                " 根據 FPV 朝目標修正方向。目標暫時離開畫面可繼續低速觀察；最長120秒。" +
+                " 使用者停車、手動接管或失去連線／影像仍會停。無測距或車端 ACK。", 12);
         root.addView(button("讓 Gemini 看人物方向並走一步（最多 0.5 秒）", v -> {
             if (!gemini.sendText("這是使用者明確要求：請觀察你近期實際看見的車頭 FPV 畫面。" +
                     " 若清楚只有一個人物，呼叫 guide_toward_person 選 left/center/right；" +
@@ -1671,6 +1676,18 @@ public final class MainActivity extends Activity {
         });
     }
 
+    /** Explicit human motion requests may arm automatically after endpoint validation. */
+    private String ensureAiDriveReady() {
+        if (control.armed()) return null;
+        String error = control.arm(); // validates WL profile, Wi-Fi, endpoint and protocol
+        if (error != null) return "blocked: car connection not ready: " + error;
+        runOnUiThread(() -> {
+            if (drivePad != null) drivePad.setControlsAvailable(true);
+            updateLockButton();
+        });
+        return null;
+    }
+
     private void connectGeminiOnNetwork(String apiKey, Network route) {
         gemini.connect(apiKey, route, new GeminiLive.Listener() {
             @Override public void onStatus(String status) {
@@ -1696,14 +1713,22 @@ public final class MainActivity extends Activity {
             @Override public void onSpeechState(boolean speaking) {
                 runOnUiThread(() -> updateTalkButtons());
             }
-            @Override public String onStartAiDriveSession() {
+            @Override public String onStartAiDriveSession(String goal) {
                 if (visionAlign.active())
                     return "blocked: local person alignment already running";
                 if (!foreground || !drivingMode || !gemini.ready() ||
-                        activeProfile != CarProfile.WL_TECH || routes.wifi() == null ||
-                        !control.armed())
-                    return "blocked: Gemini/WL Wi-Fi/foreground and human manual unlock required";
-                return control.startAiDriveSession();
+                        activeProfile != CarProfile.WL_TECH || routes.wifi() == null)
+                    return "blocked: Gemini/WL Wi-Fi/foreground required";
+                String ready = ensureAiDriveReady();
+                if (ready != null) return ready;
+                String result = control.startAiDriveSession();
+                if (!result.startsWith("blocked")) {
+                    String clean = goal == null ? "" : goal.replaceAll("[\\p{Cntrl}]", " ").trim();
+                    aiDriveGoal = clean.isEmpty() ? "往前探索" :
+                            clean.substring(0, Math.min(48, clean.length()));
+                    log.i("AI_SESSION", "user destination stored; goal text not logged");
+                }
+                return result;
             }
             @Override public String onAdjustAiDriveSession(long id, String steering, String speed) {
                 if (visionAlign.active() || !foreground || !drivingMode ||
@@ -1719,18 +1744,20 @@ public final class MainActivity extends Activity {
                 if (visionAlign.active())
                     return "blocked: local person alignment owns session; use stop_car first";
                 if (!foreground || !drivingMode || !gemini.ready() ||
-                        activeProfile != CarProfile.WL_TECH || routes.wifi() == null ||
-                        !control.armed())
-                    return "blocked: Gemini/WL Wi-Fi/foreground and manual unlock required";
+                        activeProfile != CarProfile.WL_TECH || routes.wifi() == null)
+                    return "blocked: Gemini/WL Wi-Fi/foreground required";
+                String ready = ensureAiDriveReady();
+                if (ready != null) return ready;
                 return control.driveIntent(intent);
             }
             @Override public String onGuideTowardPerson(String bearing) {
                 if (visionAlign.active())
                     return "blocked: local person alignment is active";
                 if (!foreground || !drivingMode || !gemini.ready() ||
-                        activeProfile != CarProfile.WL_TECH || routes.wifi() == null ||
-                        !control.armed())
-                    return "blocked: Gemini/WL Wi-Fi/foreground and manual unlock required";
+                        activeProfile != CarProfile.WL_TECH || routes.wifi() == null)
+                    return "blocked: Gemini/WL Wi-Fi/foreground required";
+                String ready = ensureAiDriveReady();
+                if (ready != null) return ready;
                 // This requires recent camera and video queue activity. Neither proves
                 // Gemini understood the person or that the path is unobstructed.
                 long age = cameraAgeMs();
@@ -1806,6 +1833,7 @@ public final class MainActivity extends Activity {
                         "pulse_remaining_ms", control.remainingMs(),
                         "ai_hold_active", control.aiHoldActive(),
                         "ai_drive_session_active", control.aiDriveSessionActive(),
+                        "ai_drive_goal", control.aiDriveSessionActive() ? aiDriveGoal : "",
                         "ai_drive_session_id", control.aiDriveSessionId(),
                         "ai_drive_speed_gain_percent", control.aiDriveSpeedGain(),
                         "ai_drive_update_age_ms", control.aiDriveLastControlAgeMs(),
