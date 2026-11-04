@@ -41,7 +41,7 @@ public final class GeminiLive {
         String onDrive(String direction, int milliseconds);
         String onDriveIntent(String intent);
         String onStartAiDriveSession(String goal);
-        String onAdjustAiDriveSession(long sessionId, String steering, String speed);
+        String onAdjustAiDriveSession(long sessionId, String steering, String speed, String motion);
         long currentAiDriveSessionId();
         String onGuideTowardPerson(String bearing);
         String onAlignSelectedPerson();
@@ -240,15 +240,18 @@ public final class GeminiLive {
             String instruction = "你是 Crew Car 的繁體中文語音遙控助手。單次短移動才使用 drive_intent。" +
                     "短動作每次最多一次；AI Drive Session 的前進油門改由 Android 本地持續維持，" +
                     "你只更新方向與速度，不需要一停一走，也不得自行重新開新 session。" +
-                    "「前進一點」選 forward_small（0.5秒），普通「往前進／前進」選 forward（0.9秒），兩者不同。" +
+                    "「前進一點」選 forward_small（0.5秒），普通「往前進／前進」啟動一次5秒AI駕駛，" +
+                    "5秒內可以用 adjust_ai_drive_session 控制左右轉、回正、倒退或停止。" +
                     "「後退一點」選 backward_small（0.5秒），「倒車」選 backward（0.9秒）。" +
                     "「左前方／右前方」選 front_left/front_right（0.6秒），轉向和油門會一起停止，" +
                     "沒有轉向完畢後繼續直行的尾段；加「一點」才選 _small（0.5秒）。" +
                     "使用者說「持續前進／朝門口開／到桌子附近／開始 AI 駕駛」請呼叫 start_ai_drive_session，" +
                     "把人類指定的門口、桌子等目標放在 goal 參數，作為同一段駕駛任務的方向參考。" +
-                    "Android 本地維持前進油門，最多120秒；若使用者喊停、斷線、影像中斷或30秒沒有控制更新則停止。" +
+                    "Android 本地維持前進油門，每次明確駕駛命令最多5秒；在5秒內可調整方向或切換倒車。" +
+                    "期滿自動停止；沒有下一個明確人類命令不得自行重新啟動。" +
                     "開始時工具會回 session_id，行駛中以 adjust_ai_drive_session 搭配該 id 修改方向與速度。" +
-                    "方向 left/right 每次只修正900毫秒，然後方向回正，油門不會中斷；" +
+                    "方向 left/right 每次只修正900毫秒後回正，前進／倒車油門維持；" +
+                    "motion 可用 forward/reverse/keep/stop，改向不需重新開始行駛。" +
                     "速度 slow/normal/fast 分別是原廠增益的50/65/80%，並非量測的 km/h。" +
                     "Android 會定期要求你重新觀察 FPV，朝人類指定目標調整方向和速度。" +
                     "畫面偶爾模糊、目標暫時離開視野，不要只因不確定就停止；" +
@@ -260,7 +263,10 @@ public final class GeminiLive {
                     "不要把畫面裡有牆就視為必須停車；只有明顯即將碰撞才主動停止。" +
                     "使用者明確發出駕駛指令後，Android 驗證車型與連線並自動啟用控制，不需要先點擊解鎖。" +
                     " 使用者說停應立即 stop_car；Live 或車 Wi-Fi 中斷由 Android 停止。" +
-                    "不需額外 8／20 秒授權；工具 queued 不能當作車輛已經移動。" +
+                    "不需額外授權；工具 queued 只是 Android 已排入控制命令，不代表車端確認，也不需要等待車端ACK。" +
+                    "車子沒有ACK通道。不要一直報告『沒有收到回應』。" +
+                    "觀察前後兩張FPV影像相對於固定背景的位移，判斷看起來是否有前進或轉彎；" +
+                    "如果沒有足夠可比影像，報告『尚無法從畫面確認』，不是網路沒有回應。" +
                     "只依照確實看見的畫面推估方向；未看到目標時持續低速觀察，不要猜測距離或宣稱抵達。" +
                     "使用者說「朝著那個人走／往前面的人方向走」，優先使用 guide_toward_person：" +
                     "依你真正可見的近期車頭 FPV 畫面判斷單一人物在左、中、右。" +
@@ -539,14 +545,19 @@ public final class GeminiLive {
                 long sessionId = args == null ? 0 : args.optLong("session_id", 0);
                 String steering = args == null ? "" : args.optString("steering", "");
                 String speed = args == null ? "" : args.optString("speed", "");
+                String motion = args == null ? "keep" : args.optString("motion", "keep");
                 if (!AiDriveSessionPolicy.validSteering(steering) ||
-                        !AiDriveSessionPolicy.validSpeed(speed))
-                    return toolStatus("blocked", "invalid steering or speed; no movement");
-                String result = listener.onAdjustAiDriveSession(sessionId, steering, speed);
+                        !AiDriveSessionPolicy.validSpeed(speed) ||
+                        (!"keep".equals(motion) && !"forward".equals(motion) &&
+                         !"reverse".equals(motion) && !"stop".equals(motion)))
+                    return toolStatus("blocked", "invalid steering, speed or motion; no movement");
+                String result = listener.onAdjustAiDriveSession(sessionId, steering, speed, motion);
                 boolean blocked = result == null || result.startsWith("blocked");
-                return toolStatus(blocked ? "blocked" : "queued",
+                boolean stopped = result != null && result.startsWith("stopped");
+                return toolStatus(blocked ? "blocked" : stopped ? "requested" : "queued",
                         result == null ? "no result" : result)
                         .put("session_id", sessionId)
+                        .put("motion", motion)
                         .put("session_extended", false)
                         .put("throttle_kept_on_during_turn", !blocked)
                         .put("steering_correction_ms", AiDriveSessionPolicy.STEERING_HOLD_MS)
@@ -563,6 +574,9 @@ public final class GeminiLive {
                 return toolStatus(blocked ? "blocked" : "queued",
                         result == null ? "no result" : result)
                         .put("intent", intent)
+                        .put("session_id", blocked ? 0 :
+                                (("forward".equals(intent) || "forward_continuous".equals(intent)) ?
+                                listener.currentAiDriveSessionId() : 0))
                         .put("local_lease_ms", plan.leaseMs)
                         .put("automatic_stop", true)
                         .put("extra_authorization_required", false)
@@ -667,7 +681,7 @@ public final class GeminiLive {
         } catch (Exception e) { return false; }
     }
 
-    /** Queue at most 1 JPEG/second; do not report it as delivered or visually understood. */
+    /** Lightweight JPEG input, <=1 fps; queued frames are not model acknowledgements. */
     public synchronized void frame(Bitmap original) {
         WebSocket target = socket;
         if (!ready || target == null || original == null) return;
@@ -675,14 +689,15 @@ public final class GeminiLive {
         if (lastFrameSent > 0 && now - lastFrameSent < 1000 ||
                 target.queueSize() > 1024 * 1024) return;
         try {
-            float scale = Math.min(1f, 512f / Math.max(original.getWidth(), original.getHeight()));
+            long encodeStarted = SystemClock.elapsedRealtime();
+            float scale = Math.min(1f, 448f / Math.max(original.getWidth(), original.getHeight()));
             Bitmap sized = Bitmap.createScaledBitmap(original,
                     Math.max(1, Math.round(original.getWidth() * scale)),
                     Math.max(1, Math.round(original.getHeight() * scale)), true);
-            ByteArrayOutputStream stream = new ByteArrayOutputStream(60 * 1024);
+            ByteArrayOutputStream stream = new ByteArrayOutputStream(32 * 1024);
             boolean encoded;
             try {
-                encoded = sized.compress(Bitmap.CompressFormat.JPEG, 68, stream);
+                encoded = sized.compress(Bitmap.CompressFormat.JPEG, 60, stream);
             } finally {
                 if (sized != original) sized.recycle();
             }
@@ -690,6 +705,7 @@ public final class GeminiLive {
                 log.e("VIDEO", "JPEG encode failed");
                 return;
             }
+            long encodedMs = SystemClock.elapsedRealtime() - encodeStarted;
             byte[] bytes = stream.toByteArray();
             JSONObject m = new JSONObject().put("realtimeInput", new JSONObject()
                     .put("video", new JSONObject().put("mimeType", "image/jpeg")
@@ -700,10 +716,11 @@ public final class GeminiLive {
                 videoFramesQueued++;
                 if (videoFramesQueued % 5 == 1)
                     log.i("VIDEO", "Live JPEG queued count=" + videoFramesQueued +
-                            " width=" + original.getWidth() +
-                            " height=" + original.getHeight() +
-                            " bytes=" + bytes.length +
-                            " (WebSocket queued, NOT model acknowledgement)");
+                            " src=" + original.getWidth() + "x" + original.getHeight() +
+                            " jpegLongSide<=448 quality=60 bytes=" + bytes.length +
+                            " encodeMs=" + encodedMs + " websocketQueueBytes=" +
+                            target.queueSize() +
+                            " (WebSocket queued; NOT model acknowledgement)");
             } else log.e("VIDEO", "WebSocket video queue rejected frame");
         } catch (Exception e) {
             log.e("VIDEO", "video frame error=" + e.getClass().getSimpleName());
