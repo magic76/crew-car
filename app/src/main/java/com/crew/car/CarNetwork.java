@@ -22,6 +22,7 @@ import java.net.URLConnection;
 public final class CarNetwork {
     private final ConnectivityManager cm;
     private final CarLog log;
+    private final CarWifiPinManager carWifi;
     private final Handler main = new Handler(Looper.getMainLooper());
     private ConnectivityManager.NetworkCallback cellularRequest;
     private Consumer<Network> pendingCellularReady;
@@ -36,10 +37,14 @@ public final class CarNetwork {
     public CarNetwork(Context ctx, CarLog log) {
         cm = (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
         this.log = log;
+        carWifi = new CarWifiPinManager(ctx, log);
     }
 
-    /** Car access is explicitly bound to a Wi-Fi network, not the cellular default route. */
+    /** Car access is explicitly bound to Wi-Fi, never the cellular default route. */
     public Network wifi() {
+        // Once a user selected a car SSID, there is NO fallback to a different AP.
+        if (!CarWifiPinPolicy.mayUseGenericWifi(carWifi.required()))
+            return carWifi.selectedNetwork();
         Network fallback = null;
         for (Network n : cm.getAllNetworks()) {
             NetworkCapabilities cap = cm.getNetworkCapabilities(n);
@@ -56,19 +61,51 @@ public final class CarNetwork {
      */
     public Network internet(Network car) {
         Network fallback = null;
+        final boolean carSsidPinned = carWifi.required();
         for (Network n : cm.getAllNetworks()) {
             NetworkCapabilities cap = cm.getNetworkCapabilities(n);
             if (cap == null || n.equals(car) ||
                     !cap.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) ||
                     !cap.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) continue;
             if (cap.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) return n;
-            fallback = n;
+            if (!carSsidPinned) fallback = n;
         }
+        // In dedicated-car mode Gemini must use validated cellular, never
+        // another Wi-Fi AP even if the car is momentarily disconnected.
+        if (carSsidPinned) return null;
         // An offline toy Wi-Fi must never be used for a cloud websocket.
         if (car != null && !isValidatedInternet(car)) return null;
         if (fallback != null) return fallback;
         return isValidatedInternet(car) ? car : null;
     }
+
+    public void restoreCarWifiRequirement(String ssid) {
+        carWifi.require(ssid);
+        closeControlChannel();
+    }
+
+    public String connectCarWifi(String ssid, String passphrase,
+                                 CarWifiPinManager.Listener listener) {
+        closeControlChannel();
+        return carWifi.connect(ssid, passphrase, (message, disconnected) -> {
+            if (disconnected) closeControlChannel();
+            if (listener != null) listener.onState(message, disconnected);
+        });
+    }
+
+    public void releaseCarWifi() {
+        closeControlChannel();
+        carWifi.release();
+    }
+
+    public void setCarWifiForeground(boolean foreground) {
+        carWifi.setForeground(foreground);
+    }
+
+    public boolean carWifiPinned() { return carWifi.required(); }
+    public boolean carWifiConnected() { return carWifi.connected(); }
+    public String carWifiSsid() { return carWifi.ssid(); }
+    public String carWifiStatus() { return carWifi.status(); }
 
     public boolean isValidatedInternet(Network n) {
         if (n == null) return false;
@@ -252,7 +289,10 @@ public final class CarNetwork {
 
     public void diagnostics() {
         Network car = wifi();
-        log.i("NET", "carWiFi=" + (car != null) + " internetViaSeparateNetwork=" + (internet(car) != null));
+        log.i("NET", "carWiFi=" + (car != null) +
+                " carSsidPinned=" + carWifi.required() +
+                " pinnedNetworkReady=" + carWifi.connected() +
+                " internetViaSeparateNetwork=" + (internet(car) != null));
         for (Network n : cm.getAllNetworks()) {
             NetworkCapabilities caps = cm.getNetworkCapabilities(n);
             LinkProperties lp = cm.getLinkProperties(n);
