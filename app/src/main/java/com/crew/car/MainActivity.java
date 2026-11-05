@@ -44,6 +44,9 @@ import org.json.JSONObject;
 
 public final class MainActivity extends Activity {
     private static final int MIC_PERMISSION_REQUEST = 101;
+    private static final int CAR_WIFI_PERMISSION_REQUEST = 102;
+    private String pendingCarWifiSsid;
+    private String pendingCarWifiPassword;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final Runnable saveGeminiKeyLater = this::saveGeminiKeyLocally;
     private final Map<String, EditText> packets = new LinkedHashMap<>();
@@ -174,6 +177,7 @@ public final class MainActivity extends Activity {
     private SeekBar tuningPeriod, tuningSteer, tuningThrottle;
     private TextView tuningPreview, tuningActive, txDiagnostics;
     private TextView netStatus, cameraStatus, liveStatus, driverLiveStatus, transcript, logs;
+    private TextView carWifiDetail;
     private TextView vehicleTitle;
     private CarProfile activeProfile = CarProfile.WL_TECH;
     private boolean switchingCarProfile;
@@ -271,6 +275,11 @@ public final class MainActivity extends Activity {
                 .getInt("protocol_profile", 1));
         log = new CarLog();
         routes = new CarNetwork(this, log);
+        String rememberedCarWifi = saved("car_wifi_ssid", "");
+        if (CarWifiPinPolicy.validSsid(rememberedCarWifi)) {
+            routes.restoreCarWifiRequirement(rememberedCarWifi);
+            log.i("CAR_WIFI", "saved car SSID selected; requires explicit Android connection");
+        }
         control = new CarControl(routes, log);
         camera = new CameraStream(routes, log);
         wltoysVideo = new WltoysVideoStream(routes, log);
@@ -542,6 +551,8 @@ public final class MainActivity extends Activity {
         statusStrip.setBackgroundColor(Color.rgb(233, 241, 246));
         banner.addView(statusStrip, new LinearLayout.LayoutParams(-1, dp(28)));
         netStatus = label(statusStrip, "Wi-Fi：檢查中", 12);
+        netStatus.setOnClickListener(v -> openCarWifiDialog());
+        netStatus.setContentDescription("車輛 Wi-Fi 狀態；點擊選擇車輛網路");
         cameraStatus = label(statusStrip, "FPV：未連線", 12);
         driverLiveStatus = label(statusStrip, "AI：未連線", 12);
         aiDriveStatus = label(statusStrip, "油門：停止", 12);
@@ -747,6 +758,12 @@ public final class MainActivity extends Activity {
                     routes.diagnostics();
                     updateNetworkStatus();
                 }));
+        label(root, "指定小車 SSID，Android 會詢問授權。車子 Wi-Fi 專供馬達與 FPV，" +
+                "Gemini 使用 4G／5G；未連上指定車子 Wi-Fi 時不會改連其他熱點控制。", 12);
+        row(root, button("固定／重連車子 Wi-Fi", v -> openCarWifiDialog()),
+                button("取消車輛專用模式", v -> disableCarWifiPin()));
+        carWifiDetail = label(root, "專用 Wi-Fi：尚未選擇", 12);
+        updateCarWifiDetail();
 
         settingsCuts[0] = root.getChildCount(); // vehicle intro / Wi-Fi actions
         label(root, "1. FPV 攝影機", 17).setTypeface(null, Typeface.BOLD);
@@ -1353,10 +1370,111 @@ public final class MainActivity extends Activity {
     private void updateNetworkStatus() {
         if (netStatus != null) {
             Network wifi = routes.wifi();
-            netStatus.setText(wifi == null ? "● Wi-Fi 未連" : "● Wi-Fi 已連");
+            boolean dedicated = routes.carWifiPinned();
+            netStatus.setText(dedicated ?
+                    (wifi == null ? "● 車 Wi-Fi 待連" : "● 車 Wi-Fi 已固定") :
+                    (wifi == null ? "● Wi-Fi 未連" : "● Wi-Fi 一般模式"));
             netStatus.setTextColor(wifi == null ? Color.rgb(160, 60, 55) :
                     Color.rgb(32, 116, 98));
+            netStatus.setContentDescription(routes.carWifiPinned() ?
+                    routes.carWifiStatus() + "；點擊重新連接車子 Wi-Fi" :
+                    "一般 Wi-Fi 模式；點擊設定指定車子 Wi-Fi");
         }
+        updateCarWifiDetail();
+    }
+
+    private void updateCarWifiDetail() {
+        if (carWifiDetail == null) return;
+        carWifiDetail.setText(routes.carWifiPinned() ?
+                "指定 SSID：" + routes.carWifiSsid() + "｜" + routes.carWifiStatus() +
+                "（網路配對會由 Android 顯示確認；不保證永久連線）" :
+                "尚未指定車子 Wi-Fi：使用一般 Wi-Fi 模式，系統可能切換其他網路");
+    }
+
+    /** User-initiated Android local-only Wi-Fi request. Never starts the motor. */
+    private void openCarWifiDialog() {
+        LinearLayout form = new LinearLayout(this);
+        form.setOrientation(LinearLayout.VERTICAL);
+        form.setPadding(dp(20), dp(6), dp(20), dp(6));
+        EditText ssidInput = field(form, "車子 Wi-Fi 名稱（SSID）",
+                routes.carWifiPinned() ? routes.carWifiSsid() :
+                        saved("car_wifi_ssid", ""), false);
+        EditText passwordInput = field(form, "WPA2 密碼（開放式 Wi-Fi 留空）", "", false);
+        passwordInput.setInputType(InputType.TYPE_CLASS_TEXT |
+                InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        label(form, "SSID 必須跟車子廣播的 Wi-Fi 名稱一致。" +
+                "授權後車子使用這條 Wi-Fi，Gemini 仍使用行動數據。" +
+                "密碼只供這次連線，不會儲存。", 12);
+        new AlertDialog.Builder(this)
+                .setTitle("固定車輛 Wi-Fi")
+                .setView(form)
+                .setNegativeButton("取消", null)
+                .setNeutralButton("系統 Wi-Fi 設定",
+                        (dialog, which) -> startActivity(
+                                new Intent(Settings.ACTION_WIFI_SETTINGS)))
+                .setPositiveButton("要求連線",
+                        (dialog, which) -> connectSelectedCarWifi(
+                                ssidInput.getText().toString().trim(),
+                                passwordInput.getText().toString()))
+                .show();
+    }
+
+    private void connectSelectedCarWifi(String ssid, String password) {
+        if (!CarWifiPinPolicy.validSsid(ssid) ||
+                !CarWifiPinPolicy.validPassphrase(password)) {
+            android.widget.Toast.makeText(this,
+                    "請確認 SSID（最多 32 bytes）及密碼（留空或 8–63 字元）",
+                    android.widget.Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            android.widget.Toast.makeText(this,
+                    "Android 10 以下請至系統 Wi-Fi 設定手動連車子",
+                    android.widget.Toast.LENGTH_LONG).show();
+            startActivity(new Intent(Settings.ACTION_WIFI_SETTINGS));
+            return;
+        }
+        String permission = Build.VERSION.SDK_INT >= 33 ?
+                Manifest.permission.NEARBY_WIFI_DEVICES : Manifest.permission.ACCESS_FINE_LOCATION;
+        if (checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) {
+            pendingCarWifiSsid = ssid;
+            pendingCarWifiPassword = password;
+            requestPermissions(new String[]{permission}, CAR_WIFI_PERMISSION_REQUEST);
+            return;
+        }
+        // Even a new Android OS Wi-Fi picker may pause this activity.
+        // The pin request remains; onPause still stops/disarms all movement.
+        emergencyStopAndLock();
+        stopCameraReceiver();
+        String error = routes.connectCarWifi(ssid, password, (state, disconnected) -> {
+            if (disconnected) {
+                // A real loss revokes ALL motor ownership, including manual.
+                emergencyStopAndLock();
+                stopCameraReceiver();
+                log.e("CAR_WIFI", "dedicated car Wi-Fi lost; control disarmed");
+            }
+            updateNetworkStatus();
+            if (!disconnected && routes.carWifiConnected() && foreground)
+                maybeStartCamera();
+            if (carWifiDetail != null) carWifiDetail.setText(state);
+        });
+        if (error != null) {
+            android.widget.Toast.makeText(this, error,
+                    android.widget.Toast.LENGTH_LONG).show();
+        } else {
+            getPreferences(MODE_PRIVATE).edit().putString("car_wifi_ssid", ssid).apply();
+            log.i("CAR_WIFI", "user requested exact car SSID; awaiting OS network");
+        }
+        updateNetworkStatus();
+    }
+
+    private void disableCarWifiPin() {
+        emergencyStopAndLock();
+        stopCameraReceiver();
+        routes.releaseCarWifi();
+        getPreferences(MODE_PRIVATE).edit().remove("car_wifi_ssid").apply();
+        updateNetworkStatus();
+        log.i("CAR_WIFI", "user disabled dedicated car Wi-Fi; manual reconnect only");
     }
 
     private void uncheck() {
@@ -1968,9 +2086,13 @@ public final class MainActivity extends Activity {
                         "internet_separate_from_wifi", routes.internet(car) != null &&
                                 !routes.internet(car).equals(car),
                         "cellular_request_active", routes.cellularRequestActive(),
-                        "wifi_confirmed_as_car", false,
+                        "wifi_confirmed_as_car",
+                                routes.carWifiPinned() && routes.carWifiConnected(),
+                        "dedicated_car_wifi_enabled", routes.carWifiPinned(),
+                        "dedicated_car_wifi_connected", routes.carWifiConnected(),
+                        "dedicated_car_wifi_status", routes.carWifiStatus(),
                         "gemini_live_connected", gemini.ready(),
-                        "note", "Wi-Fi presence does not prove the connected SSID belongs to the car; no claim about packet delivery");
+                        "note", "A dedicated Wi-Fi Network is matched by Android to the user-entered SSID, not proof of motor ACK or physical movement. In generic mode SSID is unverified.");
             }
             @Override public String onDrive(String direction, int duration) {
                 if ("stop".equalsIgnoreCase(direction)) {
@@ -2028,6 +2150,20 @@ public final class MainActivity extends Activity {
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(requestCode, permissions, results);
+        if (requestCode == CAR_WIFI_PERMISSION_REQUEST) {
+            String ssid = pendingCarWifiSsid;
+            String password = pendingCarWifiPassword;
+            pendingCarWifiSsid = null;
+            pendingCarWifiPassword = null;
+            if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED &&
+                    ssid != null && password != null)
+                connectSelectedCarWifi(ssid, password);
+            else
+                android.widget.Toast.makeText(this,
+                        "未取得附近 Wi-Fi 連線權限，無法指定車子網路",
+                        android.widget.Toast.LENGTH_LONG).show();
+            return;
+        }
         if (requestCode == MIC_PERMISSION_REQUEST && results.length > 0 &&
                 results[0] == PackageManager.PERMISSION_GRANTED) {
             gemini.startMic();
@@ -2044,6 +2180,7 @@ public final class MainActivity extends Activity {
         main.removeCallbacks(saveGeminiKeyLater);
         saveGeminiKeyLocally();
         foreground = false;
+        routes.setCarWifiForeground(false);
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         main.removeCallbacks(cameraMonitor);
         main.removeCallbacks(aiDriveTicker);
@@ -2070,6 +2207,7 @@ public final class MainActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         foreground = true;
+        routes.setCarWifiForeground(true);
         updateNetworkStatus();
         main.removeCallbacks(cameraMonitor);
         main.post(cameraMonitor);
@@ -2092,6 +2230,7 @@ public final class MainActivity extends Activity {
         stopCameraReceiver();
         liveConnectToken++;
         routes.releaseCellularForLive();
+        routes.releaseCarWifi();
         if (gemini != null) gemini.disconnect();
         if (crewVision != null) crewVision.close();
         if (control != null) control.shutdown();
