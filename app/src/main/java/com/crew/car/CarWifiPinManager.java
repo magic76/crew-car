@@ -84,15 +84,6 @@ public final class CarWifiPinManager {
 
         require(selectedSsid);
         listener = stateListener;
-        WifiNetworkSpecifier.Builder specifier = new WifiNetworkSpecifier.Builder()
-                .setSsid(selectedSsid);
-        if (!password.isEmpty()) specifier.setWpa2Passphrase(password);
-        NetworkRequest request = new NetworkRequest.Builder()
-                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .setNetworkSpecifier(specifier.build())
-                .build();
-
         final int requestGeneration = generation;
         ConnectivityManager.NetworkCallback requested = new ConnectivityManager.NetworkCallback() {
             @Override public void onAvailable(Network network) {
@@ -123,6 +114,14 @@ public final class CarWifiPinManager {
             }
         };
         try {
+            WifiNetworkSpecifier.Builder specifier = new WifiNetworkSpecifier.Builder()
+                    .setSsid(selectedSsid);
+            if (!password.isEmpty()) specifier.setWpa2Passphrase(password);
+            NetworkRequest request = new NetworkRequest.Builder()
+                    .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                    .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .setNetworkSpecifier(specifier.build())
+                    .build();
             callback = requested;
             status = "等待 Android 授權並連接指定車子 Wi-Fi…";
             connectivity.requestNetwork(request, requested, main);
