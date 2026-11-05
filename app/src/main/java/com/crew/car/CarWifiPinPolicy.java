@@ -7,9 +7,13 @@ public final class CarWifiPinPolicy {
     private CarWifiPinPolicy() { }
 
     public static boolean validSsid(String ssid) {
-        return ssid != null && !ssid.isEmpty() &&
-                ssid.getBytes(StandardCharsets.UTF_8).length <= 32 &&
-                ssid.indexOf('\n') < 0 && ssid.indexOf('\r') < 0;
+        if (ssid == null || ssid.isEmpty() ||
+                ssid.getBytes(StandardCharsets.UTF_8).length > 32) return false;
+        for (int i = 0; i < ssid.length(); i++) {
+            char c = ssid.charAt(i);
+            if (c < 32 || c == 127) return false;
+        }
+        return true;
     }
 
     /** Empty means open Wi-Fi. Otherwise WPA2 passphrase (not persisted/logged). */
