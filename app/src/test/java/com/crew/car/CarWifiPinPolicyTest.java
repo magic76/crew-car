@@ -11,7 +11,7 @@ public final class CarWifiPinPolicyTest {
         assertFalse(CarWifiPinPolicy.validSsid(""));
         assertFalse(CarWifiPinPolicy.validSsid("abcdefghijklmnopqrstuvwxyz0123456789"));
         assertFalse(CarWifiPinPolicy.validSsid("car\nnetwork"));
-        assertFalse(CarWifiPinPolicy.validSsid("car\u0000network"));
+        assertFalse(CarWifiPinPolicy.validSsid("car" + (char) 0 + "network"));
     }
 
     @Test public void supportsOpenAndWpa2WithoutEverSavingSecrets() {
