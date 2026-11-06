@@ -178,6 +178,8 @@ public final class MainActivity extends Activity {
     private TextView tuningPreview, tuningActive, txDiagnostics;
     private TextView netStatus, cameraStatus, liveStatus, driverLiveStatus, transcript, logs;
     private TextView liveToolStatus;
+    private String toolCheckResult = "";
+    private int toolCheckSequence;
     private TextView carWifiDetail;
     private TextView vehicleTitle;
     private CarProfile activeProfile = CarProfile.WL_TECH;
@@ -991,26 +993,27 @@ public final class MainActivity extends Activity {
             } else log.i("TOOL", "single visual person-guided step requested (no automatic chaining)");
         }), new LinearLayout.LayoutParams(-1, dp(50)));
         root.addView(button("檢查 AI 駕駛工具（不移動）", v -> {
-            long before = gemini.toolCallsReceived();
+            long before = gemini.toolStatusCallsReceived();
             if (!gemini.requestToolHealthCheck()) {
                 log.e("TOOL", "Live disconnected; cannot run tool capability check");
                 android.widget.Toast.makeText(this, "請先連接 Gemini Live",
                         android.widget.Toast.LENGTH_LONG).show();
                 return;
             }
-            log.i("TOOL_CHECK", "read-only tool test queued; awaiting actual model calls");
-            if (liveToolStatus != null)
-                liveToolStatus.setText("工具自檢中：等待 Gemini 呼叫 get_car_status…");
+            log.i("TOOL_CHECK", "read-only status-tool check queued; awaiting model calls");
+            int check = ++toolCheckSequence;
+            toolCheckResult = "工具自檢中：等待狀態工具呼叫…";
+            updateLiveToolStatus();
             main.postDelayed(() -> {
-                if (!gemini.ready()) return;
-                boolean called = gemini.toolCallsReceived() > before;
+                if (check != toolCheckSequence || !gemini.ready()) return;
+                boolean called = gemini.toolStatusCallsReceived() > before;
                 log.i("TOOL_CHECK", called ?
-                        "model called at least one declared function" :
-                        "Gemini connected but has not invoked a tool during check");
-                if (liveToolStatus != null)
-                    liveToolStatus.setText(called ?
-                            "工具自檢：已收到模型工具呼叫（是否能開車仍看車輛狀態）" :
-                            "工具自檢：未收到 Gemini 工具呼叫，請重新連線並查看 Debug");
+                        "model invoked read-only status tool" :
+                        "Gemini connected, status tool not called during check");
+                toolCheckResult = called ?
+                        "工具自檢：已收到狀態工具呼叫" :
+                        "工具自檢：無工具呼叫，請重新連線並查看 Debug";
+                updateLiveToolStatus();
             }, 8_000);
         }), new LinearLayout.LayoutParams(-1, dp(50)));
         transcript = label(root, "對話顯示區（僅保留最新訊息）", 13);
@@ -1389,8 +1392,13 @@ public final class MainActivity extends Activity {
     }
 
     private void updateLiveToolStatus() {
-        if (liveToolStatus == null || !gemini.ready()) return;
-        liveToolStatus.setText("Gemini Live 工具：已宣告 " + gemini.toolDeclarationsSent() +
+        if (liveToolStatus == null) return;
+        if (!gemini.ready()) {
+            liveToolStatus.setText("Gemini Live 工具：未連線，尚未驗證");
+            return;
+        }
+        liveToolStatus.setText((toolCheckResult.isEmpty() ? "" : toolCheckResult + "｜") +
+                "已宣告 " + gemini.toolDeclarationsSent() +
                 " 項｜實際呼叫 " + gemini.toolCallsReceived() +
                 " 次｜被拒 " + gemini.toolCallsBlocked() +
                 " 次｜最近 " + (gemini.lastToolName().isEmpty() ?
@@ -1877,6 +1885,8 @@ public final class MainActivity extends Activity {
     }
 
     private void connectGeminiOnNetwork(String apiKey, Network route) {
+        toolCheckSequence++;
+        toolCheckResult = "";
         gemini.connect(apiKey, route, new GeminiLive.Listener() {
             @Override public void onStatus(String status) {
                 if (status.contains("失敗") || status.contains("中斷")) {
@@ -1999,6 +2009,7 @@ public final class MainActivity extends Activity {
                 return toolJson(
                         "gemini_function_declarations", gemini.toolDeclarationsSent(),
                         "gemini_function_calls_received", gemini.toolCallsReceived(),
+                        "gemini_status_tool_calls_received", gemini.toolStatusCallsReceived(),
                         "gemini_tool_last_name", gemini.lastToolName(),
                         "drive_tools_registered_on_live_setup", gemini.toolDeclarationsSent() > 0,
                         "voice_drive_can_attempt", foreground && drivingMode &&
