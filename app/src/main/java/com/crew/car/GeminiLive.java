@@ -73,6 +73,11 @@ public final class GeminiLive {
     /** Time of the last JPEG accepted into the Live WebSocket send queue. */
     private volatile long lastFrameSent;
     private volatile long videoFramesQueued;
+    private volatile int toolDeclarationsSent;
+    private volatile long toolCallsReceived;
+    private volatile long toolCallsBlocked;
+    private volatile long toolStatusCallsReceived;
+    private volatile String lastToolName = "";
     private volatile AudioRecord recorder;
     private Thread micThread;
     private OkHttpClient client;
@@ -127,6 +132,18 @@ public final class GeminiLive {
                 Math.max(0, SystemClock.elapsedRealtime() - last);
     }
     public long liveVideoFramesQueued() { return videoFramesQueued; }
+    /** setupComplete confirms setup acceptance, not that the model called a tool. */
+    public int toolDeclarationsSent() { return toolDeclarationsSent; }
+    public long toolCallsReceived() { return toolCallsReceived; }
+    public long toolCallsBlocked() { return toolCallsBlocked; }
+    public long toolStatusCallsReceived() { return toolStatusCallsReceived; }
+    public String lastToolName() { return lastToolName; }
+    public boolean requestToolHealthCheck() {
+        return sendText("這是 Crew Car 的唯讀工具自檢，不是要你開車。" +
+                "請立即呼叫已宣告的 get_car_status 與 get_network_status，" +
+                "依工具結果用繁體中文說明車子能否接收控制。" +
+                "若有阻擋條件，請說出具體 App 狀態，不要用『我只是語言模型無法控制』當理由。");
+    }
     public boolean driveReviewPending() { return driveReviews.isPending(); }
     public long driveReviewPendingAgeMs() {
         return driveReviews.pendingAgeMs(SystemClock.elapsedRealtime());
@@ -177,6 +194,11 @@ public final class GeminiLive {
         ++speechGeneration;
         this.lastFrameSent = 0L;
         this.videoFramesQueued = 0L;
+        this.toolDeclarationsSent = 0;
+        this.toolCallsReceived = 0L;
+        this.toolCallsBlocked = 0L;
+        this.toolStatusCallsReceived = 0L;
+        this.lastToolName = "";
         driveReviews.reset();
         client = new OkHttpClient.Builder()
                 .socketFactory(internet.getSocketFactory())
@@ -269,50 +291,9 @@ public final class GeminiLive {
 
     private JSONObject setup() {
         try {
-            String instruction = "你是 Crew Car 的繁體中文語音遙控助手。單次短移動才使用 drive_intent。" +
-                    "短動作每次最多一次；AI Drive Session 的前進油門改由 Android 本地持續維持，" +
-                    "你只更新方向與速度，不需要一停一走，也不得自行重新開新 session。" +
-                    "「前進一點」選 forward_small（0.5秒），普通「往前進／前進」啟動單次最長30秒的持續AI駕駛，" +
-                    "其間Android馬達不會每5秒停下：你必須依新FPV持續以adjust_ai_drive_session左右轉、回正、倒退、調速或停止。" +
-                    "「後退一點」選 backward_small（0.5秒），「倒車」選 backward（0.9秒）。" +
-                    "「左前方／右前方」選 front_left/front_right（0.6秒），轉向和油門會一起停止，" +
-                    "沒有轉向完畢後繼續直行的尾段；加「一點」才選 _small（0.5秒）。" +
-                    "使用者說「持續前進／朝門口開／到桌子附近／開始 AI 駕駛」請呼叫 start_ai_drive_session，" +
-                    "把人類指定的門口、桌子等目標放在 goal 參數，作為同一段駕駛任務的方向參考。" +
-                    "Android在同一個session內持續送馬達控制封包，單次最長30秒，並非每次更新都重新啟動。" +
-                    "每次收到視覺校驗要求都要呼叫adjust_ai_drive_session，即使不需變更也使用" +
-                    " steering=keep、speed=keep、motion=keep 表明完成新影像觀察；" +
-                    "若8秒內沒有有效控制更新，本地立即停車；30秒屆滿也會停車。" +
-                    "停止後只有新的人類駕駛指令可以重新啟動；禁止自動延長或連續開新session。" +
-                    "開始時工具會回 session_id，行駛中以 adjust_ai_drive_session 搭配該 id 修改方向與速度。" +
-                    "方向 left/right 每次只修正900毫秒後回正，前進／倒車油門維持；" +
-                    "motion 可用 forward/reverse/keep/stop，改向不需重新開始行駛。" +
-                    "起步預設 normal（85%原廠油門增益）；slow/normal/fast 分別是70/85/100%，並非量測的 km/h。" +
-                    "Android約每2.5秒要求你重新觀察更新的FPV；依前後畫面中門框或固定背景相對位置，" +
-                    "判斷目前仍在前進或倒退、是否真的轉向，然後朝人類目標調整方向和速度。" +
-                    "畫面偶爾模糊、目標暫時離開視野，不要只因不確定就停止；" +
-                    "一般可通行路線維持 normal；只有轉彎空間窄或真的需要更謹慎時才切 slow，持續辨識目標，不得假裝已看到目標。" +
-                    "若明顯即將碰撞、使用者說停、視野無法安全判斷障礙、或車端連線／影像失效應立即停止。" +
-                    "不得自行重新 start、延長本地上限或毫無根據加速。" +
-                    "鏡頭沒有可靠距離或障礙物感測，車輛沒有可驗證的安全距離、避障、車端ACK，" +
-                    "影像新鮮不代表已經測出距離。朝門口等目標時要低速調整方向，" +
-                    "不要把畫面裡有牆就視為必須停車；只有明顯即將碰撞才主動停止。" +
-                    "使用者明確發出駕駛指令後，Android 驗證車型與連線並自動啟用控制，不需要先點擊解鎖。" +
-                    " 使用者說停應立即 stop_car；Live 或車 Wi-Fi 中斷由 Android 停止。" +
-                    "不需額外授權；工具 queued 只是 Android 已排入控制命令，不代表車端確認，也不需要等待車端ACK。" +
-                    "車子沒有ACK通道。不要一直報告『沒有收到回應』。" +
-                    "觀察前後兩張FPV影像相對於固定背景的位移，判斷看起來是否有前進或轉彎；" +
-                    "如果沒有足夠可比影像，報告『尚無法從畫面確認』，不是網路沒有回應。" +
-                    "只依照確實看見的畫面推估方向；未看到目標時持續低速觀察，不要猜測距離或宣稱抵達。" +
-                    "使用者說「朝著那個人走／往前面的人方向走」，優先使用 guide_toward_person：" +
-                    "依你真正可見的近期車頭 FPV 畫面判斷單一人物在左、中、右。" +
-                    "這個一次移動工具不依賴 Android MediaPipe 人框，不用人先點框，但只能移動一次0.5秒；" +
-                    "若已在 AI Drive Session 中，改用 adjust_ai_drive_session，不得重新起動一個短移動。" +
-                    "若看不到、畫面不明、多個人物、不確定，請回報 bearing=unknown 或問人類，不能憑空猜。" +
-                    "不可自行重複呼叫或宣稱跟隨中，下一次動作需要新的使用者明確要求。" +
-                    "使用者說「對準已點選人物」，才使用 align_selected_person，需要人類先點框。" +
-                    "這不是自動跟隨或避障；最多三次160毫秒小幅前進加轉向，每次都先停車再看新畫面；可能向前位移。" +
-                    "不能自行選擇人物或連續重新開始對準，請求若被拒絕則請人類點選框並在開闊地方測試。";
+            String instruction = GeminiDrivePrompt.instruction();
+            JSONArray declarations = GeminiCarTools.declarations();
+            toolDeclarationsSent = declarations.length();
             return new JSONObject().put("setup", new JSONObject()
                     .put("model", MODEL)
                     .put("generationConfig", new JSONObject()
@@ -322,7 +303,7 @@ public final class GeminiLive {
                     .put("systemInstruction", new JSONObject()
                             .put("parts", new JSONArray().put(new JSONObject().put("text", instruction))))
                     .put("tools", new JSONArray().put(
-                            new JSONObject().put("functionDeclarations", GeminiCarTools.declarations()))));
+                            new JSONObject().put("functionDeclarations", declarations))));
         } catch (Exception e) {
             throw new IllegalStateException("build Live setup", e);
         }
@@ -350,7 +331,8 @@ public final class GeminiLive {
                 terminalStatus = null;
                 ready = true;
                 speaker.start(log);
-                log.i("LIVE", "setupComplete model=3.8-live");
+                log.i("LIVE", "setupComplete model=3.8-live declaredFunctions=" +
+                        toolDeclarationsSent + " (model tool calls not yet verified)");
                 if (listener != null) listener.onStatus("Gemini Live 已連線");
             }
             JSONObject content = m.optJSONObject("serverContent");
@@ -473,6 +455,12 @@ public final class GeminiLive {
             if (call == null) continue;
             String name = call.optString("name", "");
             String id = call.optString("id", "");
+            toolCallsReceived++;
+            if ("get_car_status".equals(name) || "get_network_status".equals(name))
+                toolStatusCallsReceived++;
+            lastToolName = name;
+            log.i("TOOL", "Gemini invoked function name=" + name +
+                    " total=" + toolCallsReceived + " (not proof of physical motion)");
             if ("adjust_ai_drive_session".equals(name)) {
                 JSONObject args = call.optJSONObject("args");
                 driveReviews.completeTool(args == null ? 0 : args.optLong("session_id", 0));
@@ -515,6 +503,7 @@ public final class GeminiLive {
                 responses.put(response);
                 JSONObject result = response.optJSONObject("response");
                 String state = result == null ? "invalid" : result.optString("status", "unknown");
+                if ("blocked".equals(state)) toolCallsBlocked++;
                 String intentSummary = "";
                 if ("drive_intent".equals(name)) {
                     JSONObject toolArgs = call.optJSONObject("args");
