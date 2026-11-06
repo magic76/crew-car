@@ -33,6 +33,7 @@ public final class WltoysVideoStream {
     private volatile long sessionId;
     private volatile Thread worker;
     private volatile DatagramSocket listening;
+    private volatile WltoysCameraCommandChannel cameraCommands;
 
     public WltoysVideoStream(CarNetwork network, CarLog log) {
         this.network = network;
@@ -69,6 +70,7 @@ public final class WltoysVideoStream {
                          Consumer<String> statusCallback, long token) {
         MediaCodec decoder = null;
         DatagramSocket dataSocket = null;
+        WltoysCameraCommandChannel commandChannel = null;
         String error = null;
         int packets = 0;
         int frames = 0;
@@ -93,13 +95,19 @@ public final class WltoysVideoStream {
             dataSocket.bind(new java.net.InetSocketAddress("0.0.0.0", WltoysProtocol.CAMERA_DATA_PORT));
             wifi.bindSocket(dataSocket);
             dataSocket.setSoTimeout(500);
+            // Keep the video receiver and camera command sender on the same
+            // Wi-Fi-bound UDP 1234 socket. A separate ephemeral command socket
+            // gives hotspot NAT no mapping for replies to local UDP 1234.
+            commandChannel = new WltoysCameraCommandChannel(
+                    dataSocket, wifi.getAllByName(host)[0], WltoysProtocol.CAMERA_COMMAND_PORT);
+            cameraCommands = commandChannel;
             listening = dataSocket;
-            // Must bind receive port before requesting camera transmission.
-            network.send(host, WltoysProtocol.CAMERA_COMMAND_PORT, false,
-                    CommandCodec.encode(WltoysProtocol.CAMERA_START_HEX, true));
+            if (!running || token != sessionId) return;
+            commandChannel.start();
             log.i("HEVC", "camera START sent target=" + host + ":" +
-                    WltoysProtocol.CAMERA_COMMAND_PORT + " rxPort=" + WltoysProtocol.CAMERA_DATA_PORT);
-            publishStatus(statusCallback, token, "已送出相機啟動；等待 UDP 1234 影像封包…");
+                    WltoysProtocol.CAMERA_COMMAND_PORT + " srcPort=" + commandChannel.localPort() +
+                    " rxPort=" + WltoysProtocol.CAMERA_DATA_PORT + " network=" + wifi);
+            publishStatus(statusCallback, token, "已從 UDP 1234 啟動相機；等待影像回傳…");
 
             byte[] buffer = new byte[2048];
             MediaCodec.BufferInfo outputInfo = new MediaCodec.BufferInfo();
@@ -119,6 +127,11 @@ public final class WltoysVideoStream {
                     continue;
                 }
                 packets++;
+                if (packets == 1) {
+                    log.i("HEVC", "first video UDP from=" +
+                            packet.getAddress().getHostAddress() + ":" + packet.getPort() +
+                            " toLocalPort=" + dataSocket.getLocalPort());
+                }
                 int len = packet.getLength();
                 byte[] assembled = assembler.accept(buffer, len);
                 if (assembled != null) {
@@ -178,15 +191,19 @@ public final class WltoysVideoStream {
             }
         } finally {
             if (token == sessionId) running = false;
+            // STOP on the same socket before closing it. An explicit stop()
+            // may already have sent STOP and closed this socket; in that case
+            // the channel suppresses a duplicate command.
+            if (token == sessionId && commandChannel != null) {
+                try {
+                    if (commandChannel.stop()) log.i("HEVC", "camera STOP sent from UDP 1234");
+                } catch (Exception e) {
+                    log.e("HEVC", "camera STOP failed " + e.getClass().getSimpleName());
+                }
+            } else if (token != sessionId) log.i("HEVC", "session superseded; old STOP suppressed");
             if (dataSocket != null) dataSocket.close();
             if (listening == dataSocket) listening = null;
-            if (token == sessionId) {
-                try {
-                    network.send(host, WltoysProtocol.CAMERA_COMMAND_PORT, false,
-                            CommandCodec.encode(WltoysProtocol.CAMERA_STOP_HEX, true));
-                    log.i("HEVC", "camera STOP sent");
-                } catch (Exception e) { log.e("HEVC", "camera STOP failed " + e.getClass().getSimpleName()); }
-            } else log.i("HEVC", "session superseded; old STOP suppressed");
+            if (cameraCommands == commandChannel) cameraCommands = null;
             if (decoder != null) {
                 try { decoder.stop(); } catch (Exception ignored) {}
                 decoder.release();
@@ -199,7 +216,7 @@ public final class WltoysVideoStream {
     }
 
     private String cameraStatus(int packets, int frames, int decoded, int dropped) {
-        if (packets == 0) return "UDP 1234 尚無封包；檢查車型、相機電源與 Wi-Fi";
+        if (packets == 0) return "UDP 1234 無影像封包；若經手機熱點中繼，可能是 NAT 未轉發（請直連小車對照）";
         if (frames == 0) return "已收 " + packets + " 個 UDP 封包，尚未組成完整影格";
         if (decoded == 0) return "已組成 " + frames + " 幀，解碼器尚未輸出影像（掉幀 " + dropped + "）";
         return "影像串流中：UDP " + packets + "、組幀 " + frames +
@@ -277,6 +294,14 @@ public final class WltoysVideoStream {
 
     public synchronized void stop() {
         running = false;
+        WltoysCameraCommandChannel channel = cameraCommands;
+        if (channel != null) {
+            try {
+                if (channel.stop()) log.i("HEVC", "camera STOP sent from UDP 1234 on explicit stop");
+            } catch (Exception e) {
+                log.e("HEVC", "camera STOP during shutdown failed " + e.getClass().getSimpleName());
+            }
+        }
         DatagramSocket s = listening;
         if (s != null) s.close();
         Thread t = worker;
