@@ -76,6 +76,7 @@ public final class GeminiLive {
     private volatile int toolDeclarationsSent;
     private volatile long toolCallsReceived;
     private volatile long toolCallsBlocked;
+    private volatile long toolStatusCallsReceived;
     private volatile String lastToolName = "";
     private volatile AudioRecord recorder;
     private Thread micThread;
@@ -135,6 +136,7 @@ public final class GeminiLive {
     public int toolDeclarationsSent() { return toolDeclarationsSent; }
     public long toolCallsReceived() { return toolCallsReceived; }
     public long toolCallsBlocked() { return toolCallsBlocked; }
+    public long toolStatusCallsReceived() { return toolStatusCallsReceived; }
     public String lastToolName() { return lastToolName; }
     public boolean requestToolHealthCheck() {
         return sendText("這是 Crew Car 的唯讀工具自檢，不是要你開車。" +
@@ -195,6 +197,7 @@ public final class GeminiLive {
         this.toolDeclarationsSent = 0;
         this.toolCallsReceived = 0L;
         this.toolCallsBlocked = 0L;
+        this.toolStatusCallsReceived = 0L;
         this.lastToolName = "";
         driveReviews.reset();
         client = new OkHttpClient.Builder()
@@ -453,6 +456,8 @@ public final class GeminiLive {
             String name = call.optString("name", "");
             String id = call.optString("id", "");
             toolCallsReceived++;
+            if ("get_car_status".equals(name) || "get_network_status".equals(name))
+                toolStatusCallsReceived++;
             lastToolName = name;
             log.i("TOOL", "Gemini invoked function name=" + name +
                     " total=" + toolCallsReceived + " (not proof of physical motion)");
