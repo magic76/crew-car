@@ -73,6 +73,9 @@ public final class WltoysVideoStream {
         WltoysCameraCommandChannel commandChannel = null;
         String error = null;
         int packets = 0;
+        int videoPackets = 0;
+        int cameraReplies = 0;
+        int invalidPackets = 0;
         int frames = 0;
         int dropped = 0;
         int decoded = 0;
@@ -94,7 +97,9 @@ public final class WltoysVideoStream {
             dataSocket.setReuseAddress(true);
             dataSocket.bind(new java.net.InetSocketAddress("0.0.0.0", WltoysProtocol.CAMERA_DATA_PORT));
             wifi.bindSocket(dataSocket);
-            dataSocket.setSoTimeout(500);
+            // Short timeout lets the receiver thread issue camera STOP promptly
+            // when the UI requests shutdown, without network I/O on the UI thread.
+            dataSocket.setSoTimeout(100);
             // Keep the video receiver and camera command sender on the same
             // Wi-Fi-bound UDP 1234 socket. A separate ephemeral command socket
             // gives hotspot NAT no mapping for replies to local UDP 1234.
@@ -118,21 +123,37 @@ public final class WltoysVideoStream {
                     dataSocket.receive(packet);
                 } catch (java.net.SocketTimeoutException ignored) {
                     if (SystemClock.elapsedRealtime() - reportAt >= 5000) {
-                        log.i("HEVC", "rx packets=" + packets + " frames=" + frames +
-                                " decoded=" + decoded + " dropped=" + dropped);
+                        log.i("HEVC", "rx packets=" + packets + " video=" + videoPackets +
+                                " cameraReplies=" + cameraReplies + " invalid=" + invalidPackets +
+                                " frames=" + frames + " decoded=" + decoded + " dropped=" + dropped);
                         publishStatus(statusCallback, token,
-                                cameraStatus(packets, frames, decoded, dropped));
+                                cameraStatus(videoPackets, cameraReplies, invalidPackets, frames, decoded, dropped));
                         reportAt = SystemClock.elapsedRealtime();
                     }
                     continue;
                 }
                 packets++;
-                if (packets == 1) {
-                    log.i("HEVC", "first video UDP from=" +
-                            packet.getAddress().getHostAddress() + ":" + packet.getPort() +
-                            " toLocalPort=" + dataSocket.getLocalPort());
-                }
                 int len = packet.getLength();
+                if (packets <= 3) {
+                    log.i("HEVC", "packet #" + packets + " from=" +
+                            packet.getAddress().getHostAddress() + ":" + packet.getPort() +
+                            " toLocalPort=" + dataSocket.getLocalPort() + " bytes=" + len);
+                }
+                if (WltoysCameraPacketInspector.likelyCameraCommandReply(
+                        packet.getPort(), buffer, len)) {
+                    cameraReplies++;
+                    continue;
+                }
+                if (!WltoysCameraPacketInspector.looksLikeVideoFragment(buffer, len)) {
+                    invalidPackets++;
+                    continue;
+                }
+                videoPackets++;
+                if (videoPackets == 1) {
+                    log.i("HEVC", "first valid video fragment from=" +
+                            packet.getAddress().getHostAddress() + ":" + packet.getPort() +
+                            " bytes=" + len);
+                }
                 byte[] assembled = assembler.accept(buffer, len);
                 if (assembled != null) {
                     int expected = assembled.length;
@@ -176,10 +197,11 @@ public final class WltoysVideoStream {
                  }
 
                 if (SystemClock.elapsedRealtime() - reportAt >= 5000) {
-                    log.i("HEVC", "rx packets=" + packets + " frames=" + frames +
-                            " decoded=" + decoded + " dropped=" + dropped);
+                    log.i("HEVC", "rx packets=" + packets + " video=" + videoPackets +
+                            " cameraReplies=" + cameraReplies + " invalid=" + invalidPackets +
+                            " frames=" + frames + " decoded=" + decoded + " dropped=" + dropped);
                     publishStatus(statusCallback, token,
-                            cameraStatus(packets, frames, decoded, dropped));
+                            cameraStatus(videoPackets, cameraReplies, invalidPackets, frames, decoded, dropped));
                     reportAt = SystemClock.elapsedRealtime();
                 }
             }
@@ -209,17 +231,25 @@ public final class WltoysVideoStream {
                 decoder.release();
             }
             outputSurface.release();
-            log.i("HEVC", "closed packets=" + packets + " frames=" + frames +
-                    " decoded=" + decoded + " dropped=" + dropped);
+            log.i("HEVC", "closed packets=" + packets + " video=" + videoPackets +
+                    " cameraReplies=" + cameraReplies + " invalid=" + invalidPackets +
+                    " frames=" + frames + " decoded=" + decoded + " dropped=" + dropped);
             if (error != null) publishStatus(statusCallback, token, "攝影機停止：" + error);
         }
     }
 
-    private String cameraStatus(int packets, int frames, int decoded, int dropped) {
-        if (packets == 0) return "UDP 1234 無影像封包；若經手機熱點中繼，可能是 NAT 未轉發（請直連小車對照）";
-        if (frames == 0) return "已收 " + packets + " 個 UDP 封包，尚未組成完整影格";
+    private String cameraStatus(int videoPackets, int cameraReplies, int invalidPackets,
+                                int frames, int decoded, int dropped) {
+        if (videoPackets == 0 && cameraReplies > 0)
+            return "收到相機指令回覆 " + cameraReplies +
+                    " 包，但沒有有效影像片段；手機熱點 NAT 可能未轉發 FPV";
+        if (videoPackets == 0 && invalidPackets > 0)
+            return "UDP 收到 " + invalidPackets + " 個非影像封包；影像串流尚未到達";
+        if (videoPackets == 0)
+            return "UDP 1234 尚無影像封包；請直連小車 Wi-Fi 對照或檢查熱點 NAT";
+        if (frames == 0) return "已收 " + videoPackets + " 個影像片段，尚未組成完整影格";
         if (decoded == 0) return "已組成 " + frames + " 幀，解碼器尚未輸出影像（掉幀 " + dropped + "）";
-        return "影像串流中：UDP " + packets + "、組幀 " + frames +
+        return "影像串流中：片段 " + videoPackets + "、組幀 " + frames +
                 "、解碼輸出 " + decoded + "、掉幀 " + dropped;
     }
 
@@ -293,26 +323,45 @@ public final class WltoysVideoStream {
     }
 
     public synchronized void stop() {
+        // Never send UDP from the UI thread: Android enforces StrictMode and
+        // throws NetworkOnMainThreadException. The receive worker owns STOP
+        // and closes the socket in its finally block.
         running = false;
-        WltoysCameraCommandChannel channel = cameraCommands;
-        if (channel != null) {
-            try {
-                if (channel.stop()) log.i("HEVC", "camera STOP sent from UDP 1234 on explicit stop");
-            } catch (Exception e) {
-                log.e("HEVC", "camera STOP during shutdown failed " + e.getClass().getSimpleName());
-            }
-        }
-        DatagramSocket s = listening;
-        if (s != null) s.close();
         Thread t = worker;
         if (t != null) {
             t.interrupt();
             if (t != Thread.currentThread()) {
-                try { t.join(350); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                try { t.join(350); } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
             }
         }
-        // After the old worker has had a chance to issue camera STOP,
-        // invalidate late callbacks from the old session.
+
+        DatagramSocket socket = listening;
+        if (socket != null && !socket.isClosed()) {
+            // A worker that did not finish within the bounded join still needs
+            // best-effort STOP. Send it off the main thread, then close socket.
+            WltoysCameraCommandChannel command = cameraCommands;
+            if (command != null) {
+                Thread fallback = new Thread(() -> {
+                    try {
+                        if (command.stop())
+                            log.i("HEVC", "camera STOP sent from UDP 1234 (shutdown fallback)");
+                    } catch (Exception e) {
+                        log.e("HEVC", "camera STOP fallback failed " + e.getClass().getSimpleName());
+                    } finally {
+                        socket.close();
+                    }
+                }, "CrewCar-CameraStop");
+                fallback.start();
+                try { fallback.join(150); } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            socket.close();
+        }
+        // The previous worker had a chance to issue STOP before callbacks
+        // become stale. Never automatically arm motors on camera reconnect.
         ++sessionId;
         worker = null;
     }
