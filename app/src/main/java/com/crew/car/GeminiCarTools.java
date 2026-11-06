@@ -16,7 +16,7 @@ public final class GeminiCarTools {
     private static JSONObject action(String name, String description) throws JSONException {
         return new JSONObject()
                 .put("name", name).put("description", description)
-                .put("behavior", "NON_BLOCKING")
+                .put("behavior", CarToolBehaviorPolicy.forName(name))
                 .put("parameters", new JSONObject()
                         .put("type", "OBJECT")
                         .put("properties", new JSONObject()));
