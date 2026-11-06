@@ -981,6 +981,8 @@ public final class MainActivity extends Activity {
             if (!gemini.sendText(prompt.getText().toString())) log.e("LIVE", "請先連線 Gemini");
             else log.i("LIVE", "text turn sent (content redacted)");
         }), new LinearLayout.LayoutParams(-1, dp(50)));
+        label(root, "如果 Gemini 聲稱自己只是 LLM，請先按「檢查 AI 駕駛工具（不移動）」：" +
+                "只有收到實際的工具呼叫才算測試通過；先確認車輛 Wi-Fi 與 FPV 可用。", 12);
         label(root, "語音「朝門口開／開始 AI 駕駛」：Android 預設一般油門85%原廠增益，" +
                 "持續前進最長30秒。Gemini 約每2.5秒看新FPV，在同一段行駛中修正方向／倒退／停止。" +
                 " 若8秒未收到AI控制更新、影像或Live失效、手動接管，都會提前停車。" +
