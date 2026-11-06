@@ -177,6 +177,7 @@ public final class MainActivity extends Activity {
     private SeekBar tuningPeriod, tuningSteer, tuningThrottle;
     private TextView tuningPreview, tuningActive, txDiagnostics;
     private TextView netStatus, cameraStatus, liveStatus, driverLiveStatus, transcript, logs;
+    private TextView liveToolStatus;
     private TextView carWifiDetail;
     private TextView vehicleTitle;
     private CarProfile activeProfile = CarProfile.WL_TECH;
@@ -263,6 +264,7 @@ public final class MainActivity extends Activity {
             maybeStartCamera();
             updateNetworkStatus();
             updateTxStatus();
+            updateLiveToolStatus();
             if (drivePad != null) drivePad.setControlsAvailable(drivingMode &&
                     activeProfile == CarProfile.WL_TECH && routes.wifi() != null);
             main.postDelayed(this, 2500);
@@ -959,6 +961,7 @@ public final class MainActivity extends Activity {
             @Override public void afterTextChanged(Editable s) {}
         });
         liveStatus = label(root, "Gemini 尚未連線", 13);
+        liveToolStatus = label(root, "AI 駕駛工具：尚未連線，未收到工具呼叫", 12);
         row(root, button("連線 Live", v -> startGemini()),
                 button("斷線 Live", v -> {
                     liveConnectToken++;
@@ -987,10 +990,28 @@ public final class MainActivity extends Activity {
                 log.e("TOOL", "Gemini disconnected: cannot request person guide");
             } else log.i("TOOL", "single visual person-guided step requested (no automatic chaining)");
         }), new LinearLayout.LayoutParams(-1, dp(50)));
-        root.addView(button("測試 AI 查詢工具（不移動）", v -> {
-            if (!gemini.sendText("請先呼叫 get_car_status、get_camera_status、get_network_status，然後用繁體中文告訴我連線與安全狀態，不要移動小車。")) {
-                log.e("TOOL", "Live disconnected; cannot request tool smoke test");
-            } else log.i("TOOL", "read-only smoke test requested");
+        root.addView(button("檢查 AI 駕駛工具（不移動）", v -> {
+            long before = gemini.toolCallsReceived();
+            if (!gemini.requestToolHealthCheck()) {
+                log.e("TOOL", "Live disconnected; cannot run tool capability check");
+                android.widget.Toast.makeText(this, "請先連接 Gemini Live",
+                        android.widget.Toast.LENGTH_LONG).show();
+                return;
+            }
+            log.i("TOOL_CHECK", "read-only tool test queued; awaiting actual model calls");
+            if (liveToolStatus != null)
+                liveToolStatus.setText("工具自檢中：等待 Gemini 呼叫 get_car_status…");
+            main.postDelayed(() -> {
+                if (!gemini.ready()) return;
+                boolean called = gemini.toolCallsReceived() > before;
+                log.i("TOOL_CHECK", called ?
+                        "model called at least one declared function" :
+                        "Gemini connected but has not invoked a tool during check");
+                if (liveToolStatus != null)
+                    liveToolStatus.setText(called ?
+                            "工具自檢：已收到模型工具呼叫（是否能開車仍看車輛狀態）" :
+                            "工具自檢：未收到 Gemini 工具呼叫，請重新連線並查看 Debug");
+            }, 8_000);
         }), new LinearLayout.LayoutParams(-1, dp(50)));
         transcript = label(root, "對話顯示區（僅保留最新訊息）", 13);
         transcript.setMinHeight(dp(50));
@@ -1365,6 +1386,15 @@ public final class MainActivity extends Activity {
         updateCameraWidth();
         log.i("UI", "driver layout changed side=" + cfg.sidePercent +
                 "% steeringButtons=" + cfg.buttonSteering + " no motor-timing changes");
+    }
+
+    private void updateLiveToolStatus() {
+        if (liveToolStatus == null || !gemini.ready()) return;
+        liveToolStatus.setText("Gemini Live 工具：已宣告 " + gemini.toolDeclarationsSent() +
+                " 項｜實際呼叫 " + gemini.toolCallsReceived() +
+                " 次｜被拒 " + gemini.toolCallsBlocked() +
+                " 次｜最近 " + (gemini.lastToolName().isEmpty() ?
+                        "尚無" : gemini.lastToolName()));
     }
 
     private void updateNetworkStatus() {
@@ -1866,6 +1896,7 @@ public final class MainActivity extends Activity {
                         startMic();
                     }
                     updateTalkButtons();
+                    updateLiveToolStatus();
                 });
                 log.i("LIVE", "state updated"); // no credentials
             }
@@ -1877,7 +1908,7 @@ public final class MainActivity extends Activity {
                     return "blocked: local person alignment already running";
                 if (!foreground || !drivingMode || !gemini.ready() ||
                         activeProfile != CarProfile.WL_TECH || routes.wifi() == null)
-                    return "blocked: Gemini/WL Wi-Fi/foreground required";
+                    return "blocked: Android 車輛駕駛尚未就緒，請確認駕駛畫面、WLtoys 車型、指定車輛 Wi-Fi 與 Live 連線（不是模型能力問題）";
                 String ready = ensureAiDriveReady();
                 if (ready != null) return ready;
                 String result = control.startAiDriveSession();
@@ -1966,6 +1997,16 @@ public final class MainActivity extends Activity {
             }
             @Override public JSONObject onCarStatus() {
                 return toolJson(
+                        "gemini_function_declarations", gemini.toolDeclarationsSent(),
+                        "gemini_function_calls_received", gemini.toolCallsReceived(),
+                        "gemini_tool_last_name", gemini.lastToolName(),
+                        "drive_tools_registered_on_live_setup", gemini.toolDeclarationsSent() > 0,
+                        "voice_drive_can_attempt", foreground && drivingMode &&
+                                activeProfile == CarProfile.WL_TECH && gemini.ready() &&
+                                routes.wifi() != null && cameraRunning &&
+                                cameraAgeMs() >= 0 && cameraAgeMs() <= 5000 &&
+                                gemini.liveVideoAgeMs() >= 0 &&
+                                gemini.liveVideoAgeMs() <= 5000,
                         "safety_armed", control.armed(),
                         "manual_override", control.manual(),
                         "active_command", control.activeCommand(),
